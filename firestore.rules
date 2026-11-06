@@ -1,0 +1,117 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // User profile document rules
+    match /users/{userId} {
+      allow get, list, create, update, delete: if isOwner(userId) && isValidId(userId);
+
+      // Sub-collection: chat_sessions
+      match /chat_sessions/{sessionId} {
+        allow get, list, create, update, delete: if isOwner(userId) && isValidId(sessionId);
+      }
+
+      // Sub-collection: saved_studio (3D Runway looks, lookbook items, Darzi parchis)
+      match /saved_studio/{itemId} {
+        allow get, list, create, update, delete: if isOwner(userId) && isValidId(itemId);
+      }
+
+      // Sub-collection: saved_looks
+      match /saved_looks/{lookId} {
+        function isValidSavedLook(data) {
+          return data.keys().hasAll(['id', 'userId', 'title', 'advice', 'savedAt']) &&
+                 data.id is string && data.id.size() <= 128 &&
+                 data.userId == userId &&
+                 data.title is string && data.title.size() <= 200 &&
+                 data.advice is map;
+        }
+
+        allow get: if isOwner(userId) && isValidId(lookId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(lookId) && isValidSavedLook(incoming());
+        allow update: if isOwner(userId) && isValidId(lookId) && isValidSavedLook(incoming()) &&
+                         incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(lookId);
+      }
+
+      // Sub-collection: ratings
+      match /ratings/{ratingId} {
+        function isValidRating(data) {
+          return data.keys().hasAll(['id', 'userId', 'score', 'sentiment', 'createdAt']) &&
+                 data.id is string && data.id.size() <= 128 &&
+                 data.userId == userId &&
+                 data.score is number && data.score >= 1 && data.score <= 5 &&
+                 data.sentiment in ['positive', 'neutral', 'negative'];
+        }
+
+        allow get: if isOwner(userId) && isValidId(ratingId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(ratingId) && isValidRating(incoming());
+        allow update: if isOwner(userId) && isValidId(ratingId) && isValidRating(incoming()) &&
+                         incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(ratingId);
+      }
+
+      // Sub-collection: chats
+      match /chats/{chatId} {
+        function isValidChatMessage(data) {
+          return data.keys().hasAll(['id', 'userId', 'role', 'text', 'createdAt']) &&
+                 data.id is string && data.id.size() <= 128 &&
+                 data.userId == userId &&
+                 data.role in ['user', 'assistant'] &&
+                 data.text is string && data.text.size() <= 10000;
+        }
+
+        allow get: if isOwner(userId) && isValidId(chatId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(chatId) && isValidChatMessage(incoming());
+        allow update: if isOwner(userId) && isValidId(chatId) && isValidChatMessage(incoming()) &&
+                         incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(chatId);
+      }
+
+      // Sub-collection: images
+      match /images/{imageId} {
+        function isValidGeneratedImage(data) {
+          return data.keys().hasAll(['id', 'userId', 'prompt', 'imageUrl', 'createdAt']) &&
+                 data.id is string && data.id.size() <= 128 &&
+                 data.userId == userId &&
+                 data.prompt is string && data.prompt.size() <= 2000 &&
+                 data.imageUrl is string;
+        }
+
+        allow get: if isOwner(userId) && isValidId(imageId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(imageId) && isValidGeneratedImage(incoming());
+        allow update: if isOwner(userId) && isValidId(imageId) && isValidGeneratedImage(incoming()) &&
+                         incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(imageId);
+      }
+    }
+  }
+}

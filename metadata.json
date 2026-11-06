@@ -1,0 +1,6 @@
+{
+  "name": "PersonaGroom AI",
+  "description": "Executive-grade Pakistani fashion intelligence studio, personal styling agent, grooming coach, and cultural wardrobe architect.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

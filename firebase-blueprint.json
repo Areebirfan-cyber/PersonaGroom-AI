@@ -1,0 +1,110 @@
+{
+  "entities": {
+    "userProfile": {
+      "title": "UserProfile",
+      "description": "User profile with fashion styling preferences and demographics",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 100 },
+        "photoURL": { "type": "string", "maxLength": 500 },
+        "preferredGender": { "type": "string", "enum": ["men", "women", "unisex"] },
+        "ageGroup": { "type": "string", "enum": ["teen", "uni", "pro", "mature"] },
+        "stylePreference": { "type": "string", "enum": ["traditional", "minimalist", "fusion", "luxury"] },
+        "language": { "type": "string", "enum": ["roman", "en", "ur"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["uid", "email", "preferredGender", "stylePreference"]
+    },
+    "savedLook": {
+      "title": "SavedLook",
+      "description": "Fashion look saved by the user with tailor specs and budget",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 200 },
+        "gender": { "type": "string", "enum": ["men", "women", "unisex"] },
+        "ageGroup": { "type": "string", "maxLength": 50 },
+        "stylePreference": { "type": "string", "maxLength": 50 },
+        "advice": { "type": "object" },
+        "customAiImageUrl": { "type": "string", "maxLength": 1000 },
+        "savedAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "title", "advice", "savedAt"]
+    },
+    "adviceRating": {
+      "title": "AdviceRating",
+      "description": "User evaluation of styling advice for continuous agent learning",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "messageId": { "type": "string", "maxLength": 128 },
+        "score": { "type": "number" },
+        "sentiment": { "type": "string", "enum": ["positive", "neutral", "negative"] },
+        "tags": { "type": "array" },
+        "comment": { "type": "string", "maxLength": 1000 },
+        "category": { "type": "string", "maxLength": 50 },
+        "stylePreference": { "type": "string", "maxLength": 50 },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "score", "sentiment", "createdAt"]
+    },
+    "chatMessage": {
+      "title": "ChatMessage",
+      "description": "Individual message in a multi-turn Gemini conversation thread",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "role": { "type": "string", "enum": ["user", "assistant"] },
+        "text": { "type": "string", "maxLength": 10000 },
+        "modelUsed": { "type": "string", "maxLength": 50 },
+        "groundingSources": { "type": "array" },
+        "timestamp": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "role", "text", "createdAt"]
+    },
+    "generatedImage": {
+      "title": "GeneratedImage",
+      "description": "AI created or edited outfit and fabric visualization",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "prompt": { "type": "string", "maxLength": 2000 },
+        "editInstruction": { "type": "string", "maxLength": 1000 },
+        "imageUrl": { "type": "string" },
+        "modelUsed": { "type": "string", "maxLength": 50 },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "prompt", "imageUrl", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "userProfile",
+      "description": "User profile document storing styling preferences"
+    },
+    "/users/{userId}/saved_looks/{lookId}": {
+      "schema": "savedLook",
+      "description": "User collection of bookmarked cultural outfits"
+    },
+    "/users/{userId}/ratings/{ratingId}": {
+      "schema": "adviceRating",
+      "description": "Continuous feedback ratings for agent refinement"
+    },
+    "/users/{userId}/chats/{chatId}": {
+      "schema": "chatMessage",
+      "description": "Multi-turn Gemini chat consultation messages"
+    },
+    "/users/{userId}/images/{imageId}": {
+      "schema": "generatedImage",
+      "description": "User gallery of AI created and edited outfit images"
+    }
+  }
+}
