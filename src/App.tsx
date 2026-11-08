@@ -10,6 +10,7 @@ import {
   StylingAdvice,
   SavedLook,
   StylePreference,
+  Season,
   AdviceRating,
   UserLearningProfile,
 } from './types';
@@ -78,12 +79,16 @@ import {
   Wand2,
   Database,
   Search,
+  SprayCan,
+  Droplets,
+  Footprints,
+  Watch,
 } from 'lucide-react';
 
 interface FailSafeImageCardProps {
   primarySrc: string;
   fallbackSrc: string;
-  localFallbackSrc: string;
+  localFallbackSrc?: string;
   caption: string;
   isAiGen: boolean;
   isGenerating: boolean;
@@ -94,45 +99,31 @@ interface FailSafeImageCardProps {
 const FailSafeImageCard: React.FC<FailSafeImageCardProps> = ({
   primarySrc,
   fallbackSrc,
-  localFallbackSrc,
   caption,
   isAiGen,
   isGenerating,
   onOpenLightbox,
   onRegenerate,
 }) => {
-  const safeLocalFallback = localFallbackSrc || (caption.toLowerCase().includes('women') ? '/assets/women_festive.jpg' : '/assets/men_festive.jpg');
-
-  const [currentSrc, setCurrentSrc] = useState(primarySrc || safeLocalFallback);
+  const [currentSrc, setCurrentSrc] = useState(primarySrc);
   const [isLoaded, setIsLoaded] = useState(false);
-  const [hasTimedOut, setHasTimedOut] = useState(false);
+  const [hasError, setHasError] = useState(false);
 
   useEffect(() => {
-    setCurrentSrc(primarySrc || safeLocalFallback);
+    setCurrentSrc(primarySrc);
     setIsLoaded(false);
-    setHasTimedOut(false);
-  }, [primarySrc, safeLocalFallback]);
-
-  // Fail-Safe timeout handler: switches immediately to safe local curated fashion asset
-  useEffect(() => {
-    if (isLoaded) return;
-    const timer = setTimeout(() => {
-      if (!isLoaded && currentSrc !== safeLocalFallback) {
-        console.warn('Image loading timed out; switching to local curated fashion asset');
-        setHasTimedOut(true);
-        setCurrentSrc(safeLocalFallback);
-      }
-    }, 3000);
-    return () => clearTimeout(timer);
-  }, [isLoaded, currentSrc, safeLocalFallback]);
+    setHasError(false);
+  }, [primarySrc]);
 
   const handleError = () => {
-    // Graceful fallback directly to local curated asset
-    if (currentSrc !== safeLocalFallback) {
-      setCurrentSrc(safeLocalFallback);
+    if (fallbackSrc && currentSrc !== fallbackSrc) {
+      setCurrentSrc(fallbackSrc);
+    } else {
+      setHasError(true);
     }
-    setIsLoaded(true);
   };
+
+  if (hasError || !currentSrc) return null;
 
   return (
     <div className="space-y-1.5">
@@ -144,7 +135,7 @@ const FailSafeImageCard: React.FC<FailSafeImageCardProps> = ({
           <div className="absolute inset-0 bg-secondary/60 animate-pulse flex flex-col items-center justify-center gap-2 z-10 backdrop-blur-xs">
             <RefreshCw size={24} className="animate-spin text-primary" />
             <span className="text-[11px] font-medium text-muted-foreground tracking-wide">
-              {hasTimedOut ? 'Loading Fast Dynamic Search Fallback...' : 'Loading Dynamic AI Outfit...'}
+              Loading Style Visual...
             </span>
           </div>
         )}
@@ -233,6 +224,36 @@ const FailSafeImageCard: React.FC<FailSafeImageCardProps> = ({
   );
 };
 
+const SEASON_TIPS: Record<
+  Season,
+  { title: string; emoji: string; fabrics: string; styling: string }
+> = {
+  summer: {
+    title: 'Summer Season',
+    emoji: '☀️',
+    fabrics: 'Egyptian Cotton, Pure Lawn, Linen, Mulmul, Light Chiffon',
+    styling: 'Pastel & earthy hues, unlined soft collars, relaxed cuts, light citrus/floral attars.',
+  },
+  winter: {
+    title: 'Winter Season',
+    emoji: '❄️',
+    fabrics: 'Kashmiri Pashmina, Italian Wool, Velvet, Karandi, Marina',
+    styling: 'Rich jewel tones (emerald, deep maroon, navy), structured waistcoats, warm amber/oud notes.',
+  },
+  monsoon: {
+    title: 'Monsoon Season',
+    emoji: '🌧️',
+    fabrics: 'Treated Wash & Wear, Quick-Dry Poly-Cotton Blend, Rayon',
+    styling: 'Darker mud-resistant hems, anti-humidity wrinkle-free silhouettes, fresh aquatic/vetiver accords.',
+  },
+  festive: {
+    title: 'Festive Season',
+    emoji: '✨',
+    fabrics: 'Pure Raw Silk, Banarsi Brocade, Jamawar, Organza, Tissue',
+    styling: 'Intricate zari & tilla work, gold plackets, regal embroidery, royal sandalwood/oriental attars.',
+  },
+};
+
 export default function App() {
   const [theme, setTheme] = useState<Theme>(() => {
     try {
@@ -266,13 +287,13 @@ export default function App() {
       return 'uni';
     }
   });
-  const [customApiKey, setCustomApiKey] = useState<string>(() => {
+  useEffect(() => {
     try {
-      return localStorage.getItem('persona_api_key') || '';
+      localStorage.removeItem('persona_api_key');
     } catch {
-      return '';
+      // ignore
     }
-  });
+  }, []);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const [stylePreference, setStylePreference] = useState<StylePreference>(() => {
@@ -283,6 +304,23 @@ export default function App() {
       return 'traditional';
     }
   });
+
+  const [season, setSeason] = useState<Season>(() => {
+    try {
+      const saved = localStorage.getItem('personagroom_season');
+      return (saved as Season) || 'festive';
+    } catch {
+      return 'festive';
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('personagroom_season', season);
+    } catch (e) {
+      console.error(e);
+    }
+  }, [season]);
 
   // Save settings to localStorage
   useEffect(() => {
@@ -317,14 +355,6 @@ export default function App() {
       console.error(e);
     }
   }, [ageGroup]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('persona_api_key', customApiKey);
-    } catch (e) {
-      console.error(e);
-    }
-  }, [customApiKey]);
 
   const [inputPrompt, setInputPrompt] = useState<string>('');
   const [attachedImage, setAttachedImage] = useState<string | null>(null);
@@ -485,6 +515,7 @@ export default function App() {
   // Natural Voice TTS state
   const [playingAudioMsgId, setPlayingAudioMsgId] = useState<string | number | null>(null);
   const [isGeneratingTts, setIsGeneratingTts] = useState<boolean>(false);
+  const [ttsUnavailable, setTtsUnavailable] = useState<boolean>(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   // Mobile layout state
@@ -629,10 +660,10 @@ export default function App() {
           language,
           category: detectedCat,
           stylePreference,
+          season,
           image: userImg || undefined,
           history: conversationHistory,
           learningProfile,
-          apiKey: customApiKey || undefined,
         }),
       });
 
@@ -654,8 +685,9 @@ export default function App() {
         },
       ]);
 
-      // If backend did not already attach customAiImageUrl, automatically generate and attach it
-      if (!adviceData.customAiImageUrl) {
+      // Only automatically generate outfit image when the answer is about clothing
+      const isClothing = !adviceData.isSpecificAdvice && !adviceData.topicLabel && (Boolean(adviceData.top) || !adviceData.topicIcon);
+      if (!adviceData.customAiImageUrl && isClothing) {
         handleGenerateAiLook(adviceData, botMsgId, rawPrompt);
       }
     } catch {
@@ -687,8 +719,9 @@ export default function App() {
         },
       ]);
 
-      // Automatically generate bespoke outfit visual matching user requirement
-      if (!fallbackAdvice.customAiImageUrl) {
+      // Automatically generate bespoke outfit visual matching user requirement only for clothing
+      const isFallbackClothing = !fallbackAdvice.isSpecificAdvice && !fallbackAdvice.topicLabel && (Boolean(fallbackAdvice.top) || !fallbackAdvice.topicIcon);
+      if (!fallbackAdvice.customAiImageUrl && isFallbackClothing) {
         handleGenerateAiLook(fallbackAdvice, fallbackMsgId, rawPrompt);
       }
     } finally {
@@ -796,18 +829,22 @@ export default function App() {
           audio.onerror = () => {
             setPlayingAudioMsgId(null);
             audioRef.current = null;
+            setTtsUnavailable(true);
           };
 
           await audio.play();
           return;
         }
       }
+      // If TTS returned no audioUrl or error, mark TTS unavailable and hide button
+      setTtsUnavailable(true);
     } catch (e) {
-      console.warn('AI natural TTS failed, falling back to browser speech:', e);
+      console.warn('AI natural TTS failed, hiding audio button:', e);
+      setTtsUnavailable(true);
+    } finally {
+      setIsGeneratingTts(false);
+      setPlayingAudioMsgId(null);
     }
-
-    // Fallback to browser SpeechSynthesis with calibrated regional voice
-    setIsGeneratingTts(false);
     if ('speechSynthesis' in window) {
       const utterance = new SpeechSynthesisUtterance(spokenText);
       const voices = window.speechSynthesis.getVoices();
@@ -1405,6 +1442,69 @@ export default function App() {
               </div>
             </div>
 
+            {/* Seasonal Filter Settings Section */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                  Seasonal Filter
+                </p>
+                <span className="text-[10px] font-semibold text-primary capitalize">
+                  {season === 'festive' ? '✨ Festive' : season === 'summer' ? '☀️ Summer' : season === 'winter' ? '❄️ Winter' : '🌧️ Monsoon'}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {[
+                  { id: 'summer', label: 'Summer', sub: 'Lawn & Cotton', emoji: '☀️' },
+                  { id: 'winter', label: 'Winter', sub: 'Velvet & Marina', emoji: '❄️' },
+                  { id: 'monsoon', label: 'Monsoon', sub: 'Wash & Wear', emoji: '🌧️' },
+                  { id: 'festive', label: 'Festive', sub: 'Raw Silk & Banarsi', emoji: '✨' },
+                ].map((s) => {
+                  const isActive = season === s.id;
+                  return (
+                    <button
+                      key={s.id}
+                      onClick={() => setSeason(s.id as Season)}
+                      className={`rounded-lg border px-2.5 py-2 text-xs font-semibold transition text-left cursor-pointer ${
+                        isActive
+                          ? 'border-primary bg-primary text-primary-foreground shadow-sm'
+                          : 'border-border bg-card hover:border-primary/40 text-foreground'
+                      }`}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span>{s.emoji}</span>
+                        <span className="truncate">{s.label}</span>
+                      </div>
+                      <span
+                        className={`block text-[10px] font-normal mt-0.5 truncate ${
+                          isActive ? 'opacity-85' : 'text-muted-foreground'
+                        }`}
+                      >
+                        {s.sub}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Specific Fabric & Styling Tips Tailored to Chosen Season */}
+              <div className="rounded-xl border border-border bg-card/60 p-2.5 space-y-1.5 text-[11px]">
+                <div className="flex items-center gap-1.5 font-bold text-xs text-foreground">
+                  <span>{SEASON_TIPS[season].emoji}</span>
+                  <span>{SEASON_TIPS[season].title} Tips</span>
+                </div>
+                <div className="space-y-1 text-[10px] leading-relaxed">
+                  <p className="text-muted-foreground">
+                    <span className="font-semibold text-foreground">Fabrics: </span>
+                    {SEASON_TIPS[season].fabrics}
+                  </p>
+                  <p className="text-muted-foreground">
+                    <span className="font-semibold text-foreground">Styling: </span>
+                    {SEASON_TIPS[season].styling}
+                  </p>
+                </div>
+              </div>
+            </div>
+
             {/* AI Stylist Memory & Learning Profile Card */}
             <div className="rounded-xl border border-primary/20 bg-primary/5 p-2.5">
               <div className="flex items-center justify-between mb-1">
@@ -1429,24 +1529,6 @@ export default function App() {
                 <Brain size={12} className="text-primary" />
                 <span>View Learned Taste Profile</span>
               </button>
-            </div>
-
-            {/* Gemini API Key (Optional) Input Field */}
-            <div className="rounded-xl border border-border bg-card/60 p-2.5 space-y-1">
-              <label htmlFor="geminiApiKeyInput" className="block text-[10px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
-                Gemini API Key (Optional)
-              </label>
-              <input
-                id="geminiApiKeyInput"
-                type="password"
-                value={customApiKey}
-                onChange={(e) => setCustomApiKey(e.target.value)}
-                placeholder="AIzaSy... (Fallback active)"
-                className="w-full rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:border-primary focus:outline-none"
-              />
-              <span className="block text-[9px] text-muted-foreground leading-tight">
-                Wires directly to Google Gemini 3.8 Flash with offline rules fallback.
-              </span>
             </div>
 
             {/* Advanced Styling Modules */}
@@ -1688,36 +1770,38 @@ export default function App() {
                         <p className="text-sm font-medium text-foreground">{advice.intro}</p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        onClick={() => handlePlayNaturalVoice(advice, msg.id)}
-                        disabled={isGeneratingTts && playingAudioMsgId === msg.id}
-                        className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold transition cursor-pointer ${
-                          playingAudioMsgId === msg.id
-                            ? 'bg-primary text-primary-foreground shadow-sm animate-pulse'
-                            : 'bg-secondary/70 text-foreground hover:bg-secondary hover:text-primary border border-border'
-                        }`}
-                        title="Listen Advice with Natural Voice Accent"
-                        aria-label="Listen Advice"
-                      >
-                        {isGeneratingTts && playingAudioMsgId === msg.id ? (
-                          <>
-                            <RefreshCw size={13} className="animate-spin text-primary" />
-                            <span className="text-[11px]">Loading Voice...</span>
-                          </>
-                        ) : playingAudioMsgId === msg.id ? (
-                          <>
-                            <Volume2 size={13} className="animate-bounce text-primary-foreground" />
-                            <span className="text-[11px]">Playing Advice...</span>
-                          </>
-                        ) : (
-                          <>
-                            <Volume2 size={13} className="text-primary" />
-                            <span className="text-[11px]">Listen Advice</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
+                    {!ttsUnavailable && (
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          onClick={() => handlePlayNaturalVoice(advice, msg.id)}
+                          disabled={isGeneratingTts && playingAudioMsgId === msg.id}
+                          className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold transition cursor-pointer ${
+                            playingAudioMsgId === msg.id
+                              ? 'bg-primary text-primary-foreground shadow-sm animate-pulse'
+                              : 'bg-secondary/70 text-foreground hover:bg-secondary hover:text-primary border border-border'
+                          }`}
+                          title="Listen Advice with Natural Voice Accent"
+                          aria-label="Listen Advice"
+                        >
+                          {isGeneratingTts && playingAudioMsgId === msg.id ? (
+                            <>
+                              <RefreshCw size={13} className="animate-spin text-primary" />
+                              <span className="text-[11px]">Loading Voice...</span>
+                            </>
+                          ) : playingAudioMsgId === msg.id ? (
+                            <>
+                              <Volume2 size={13} className="animate-bounce text-primary-foreground" />
+                              <span className="text-[11px]">Playing Advice...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Volume2 size={13} className="text-primary" />
+                              <span className="text-[11px]">Listen Advice</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   {/* Core Structured Specifications & Dynamic Context-Aware Formatting */}
@@ -1887,48 +1971,64 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Visual Outfit Concept Card with Fail-Safe Dual Engine */}
-                  {(() => {
-                    const fallbackLookImage = resolveLookImage(advice, gender, msg.text || '', ageGroup);
-                    const currentImgSrc = advice.customAiImageUrl || fallbackLookImage.src;
-                    const fallbackUrl = advice.fallbackImageUrl || fallbackLookImage.fallbackSrc;
-                    const localFallback =
-                      gender === 'women'
-                        ? advice.category === 'casual'
-                          ? '/assets/women_casual.jpg'
-                          : '/assets/women_festive.jpg'
-                        : advice.category === 'casual'
-                        ? '/assets/men_casual.jpg'
-                        : '/assets/men_festive.jpg';
-                    const currentCaption =
-                      advice.customAiImageCaption ||
-                      (advice.customAiImageUrl
-                        ? `AI Bespoke Visual · ${stylePreference.toUpperCase()} Ensemble`
-                        : fallbackLookImage.caption);
-                    const isAiGen = Boolean(advice.customAiImageUrl || fallbackLookImage.src);
-                    const isGenerating = generatingImageMsgId === msg.id;
-
-                    return (
-                      <FailSafeImageCard
-                        primarySrc={currentImgSrc}
-                        fallbackSrc={fallbackUrl}
-                        localFallbackSrc={localFallback}
-                        caption={currentCaption}
-                        isAiGen={isAiGen}
-                        isGenerating={isGenerating}
-                        onOpenLightbox={() =>
-                          setActiveLightboxImage({
-                            src: currentImgSrc,
-                            caption: currentCaption,
-                            advice,
-                            gender,
-                            msgId: msg.id,
-                          })
-                        }
-                        onRegenerate={() => handleGenerateAiLook(advice, msg.id, msg.text)}
-                      />
-                    );
-                  })()}
+                  {/* Visual Outfit Concept Card OR Clean Non-Clothing Topic Card */}
+                  {!advice.customAiImageUrl ? (
+                    <div className="flex items-center gap-3.5 rounded-xl border border-primary/20 bg-primary/5 p-4 text-foreground shadow-xs my-1">
+                      <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 border border-primary/25 text-primary shrink-0">
+                        {(() => {
+                          const iconKey = (advice.topicIcon || '').toLowerCase();
+                          const lbl = (advice.topicLabel || advice.specificTopic || '').toLowerCase();
+                          if (iconKey === 'fragrance' || lbl.includes('fragrance') || lbl.includes('attar') || lbl.includes('perfume') || lbl.includes('scent')) {
+                            return <SprayCan size={22} />;
+                          }
+                          if (iconKey === 'skincare' || lbl.includes('skin') || lbl.includes('face') || lbl.includes('acne')) {
+                            return <Droplets size={22} />;
+                          }
+                          if (iconKey === 'hair' || lbl.includes('hair') || lbl.includes('beard') || lbl.includes('khat')) {
+                            return <Scissors size={22} />;
+                          }
+                          if (iconKey === 'shoes' || advice.category === 'shoes' || lbl.includes('shoe') || lbl.includes('footwear')) {
+                            return <Footprints size={22} />;
+                          }
+                          if (iconKey === 'accessories' || lbl.includes('watch') || lbl.includes('jewel') || lbl.includes('accent')) {
+                            return <Watch size={22} />;
+                          }
+                          return <Sparkles size={22} />;
+                        })()}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-primary">
+                            Specialized Consultation
+                          </span>
+                        </div>
+                        <h4 className="text-sm font-bold text-foreground truncate mt-0.5">
+                          {advice.topicLabel || advice.specificTopic || 'Grooming & Styling Intelligence'}
+                        </h4>
+                        <p className="text-xs text-muted-foreground truncate">
+                          Focused aesthetic guidance without clothing overlay
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <FailSafeImageCard
+                      primarySrc={advice.customAiImageUrl}
+                      fallbackSrc={advice.fallbackImageUrl || advice.customAiImageUrl}
+                      caption={advice.customAiImageCaption || `AI Bespoke Visual · ${stylePreference.toUpperCase()} Ensemble`}
+                      isAiGen={Boolean(advice.isAiGenerated !== false)}
+                      isGenerating={generatingImageMsgId === msg.id}
+                      onOpenLightbox={() =>
+                        setActiveLightboxImage({
+                          src: advice.customAiImageUrl!,
+                          caption: advice.customAiImageCaption || `AI Bespoke Visual · ${stylePreference.toUpperCase()} Ensemble`,
+                          advice,
+                          gender,
+                          msgId: msg.id,
+                        })
+                      }
+                      onRegenerate={() => handleGenerateAiLook(advice, msg.id, msg.text)}
+                    />
+                  )}
 
                   {/* Card Action Buttons */}
                   <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-border/60">

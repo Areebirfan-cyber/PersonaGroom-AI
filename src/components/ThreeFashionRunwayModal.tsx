@@ -110,6 +110,10 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
     goldTrimMaterials: THREE.MeshStandardMaterial[];
     torsoMesh: THREE.Mesh | null;
     flareMesh: THREE.Mesh | null;
+    frontDecalMesh: THREE.Mesh | null;
+    frontDecalMaterial: THREE.MeshPhysicalMaterial | null;
+    placketMesh: THREE.Mesh | null;
+    buttonsGroup: THREE.Group | null;
   }>({
     mannequinGroup: null,
     garmentMaterials: [],
@@ -118,6 +122,10 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
     goldTrimMaterials: [],
     torsoMesh: null,
     flareMesh: null,
+    frontDecalMesh: null,
+    frontDecalMaterial: null,
+    placketMesh: null,
+    buttonsGroup: null,
   });
 
   // Helper to extract hex color from descriptive keywords
@@ -425,7 +433,7 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
     renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.18;
+    renderer.toneMappingExposure = 0.9;
     renderer.shadowMap.enabled = !isSoftwareGl;
     renderer.shadowMap.type = THREE.PCFShadowMap;
 
@@ -442,8 +450,8 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
     scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
     pmremGenerator.dispose();
 
-    // 4. Studio Lighting Rig
-    const keyLight = new THREE.DirectionalLight(0xfff3e0, 2.9);
+    // 4. Studio Lighting Rig: key and ambient reduced by ~30%, neutral rim light
+    const keyLight = new THREE.DirectionalLight(0xfff5ea, 2.0);
     keyLight.position.set(3, 6, 4);
     keyLight.castShadow = !isSoftwareGl;
     if (keyLight.shadow) {
@@ -456,10 +464,10 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
     }
     scene.add(keyLight);
 
-    const hemiLight = new THREE.HemisphereLight(0x93c5fd, 0x1e1b4b, 1.4);
+    const hemiLight = new THREE.HemisphereLight(0xe2e8f0, 0x1e293b, 1.0);
     scene.add(hemiLight);
 
-    const rimLight = new THREE.DirectionalLight(0xa855f7, 2.2);
+    const rimLight = new THREE.DirectionalLight(0xffffff, 0.7);
     rimLight.position.set(-4, 4, -4);
     scene.add(rimLight);
 
@@ -477,12 +485,12 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
     controls.maxDistance = 6.0;
     controlsRef.current = controls;
 
-    // 6. Pedestal & Grounding Contact Shadow
+    // 6. Pedestal & Grounding Contact Shadow: darker grey (#3f3f46)
     const pedestalGeo = new THREE.CylinderGeometry(1.6, 1.7, 0.08, 48);
     const pedestalMat = new THREE.MeshStandardMaterial({
-      color: 0x0f172a,
-      roughness: 0.3,
-      metalness: 0.6,
+      color: 0x3f3f46,
+      roughness: 0.4,
+      metalness: 0.3,
     });
     const pedestal = new THREE.Mesh(pedestalGeo, pedestalMat);
     pedestal.position.y = 0.04;
@@ -535,15 +543,12 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
     standPole.position.y = 0.44;
     mannequinGroup.add(standPole);
 
-    // Garment Materials: authentic fabric roughness 0.7, metalness 0
+    // Garment Materials: authentic fabric roughness 0.7, metalness 0, no sheen/tint wash
     const garmentMat = new THREE.MeshPhysicalMaterial({
       color: new THREE.Color(upperColor),
       roughness: 0.7,
       metalness: 0.0,
-      clearcoat: 0.1,
-      clearcoatRoughness: 0.5,
-      sheen: 0.6,
-      sheenColor: new THREE.Color(0xfff1f2),
+      clearcoat: 0.0,
     });
 
     const trouserMat = new THREE.MeshStandardMaterial({
@@ -558,50 +563,101 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
       metalness: 0.88,
     });
 
-    // Torso (Upper Garment)
+    // Separate front decal material for uploaded photo (transparent with depthWrite false for seamless fade)
+    const frontDecalMat = new THREE.MeshPhysicalMaterial({
+      color: new THREE.Color(0xffffff),
+      roughness: 0.7,
+      metalness: 0.0,
+      clearcoat: 0.0,
+      side: THREE.FrontSide,
+      transparent: true,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+
+    // Torso (Upper Garment - Back, sides, and base body use plain extracted coat color)
     const torsoGeo = new THREE.CylinderGeometry(0.24, 0.21, 0.65, 32);
     const torso = new THREE.Mesh(torsoGeo, garmentMat);
     torso.position.y = 1.25;
     torso.castShadow = !isSoftwareGl;
     mannequinGroup.add(torso);
 
-    // Two Symmetric Sleeves angled naturally downward
-    const sleeveGeo = new THREE.CylinderGeometry(0.065, 0.055, 0.58, 20);
+    // Front-facing curved decal: shows photo ONLY ONCE on front arc (~120 degrees at front, collar to hem)
+    const frontDecalGeo = new THREE.CylinderGeometry(
+      0.2415,
+      0.2115,
+      0.65,
+      32,
+      1,
+      true,
+      -Math.PI / 3,
+      (2 * Math.PI) / 3
+    );
+    const frontDecalMesh = new THREE.Mesh(frontDecalGeo, frontDecalMat);
+    frontDecalMesh.position.y = 1.25;
+    frontDecalMesh.visible = Boolean(uploadedPhotoUrl && usePhotoTexture);
+    mannequinGroup.add(frontDecalMesh);
+
+    // Two Symmetric Straight Tapered Sleeves overlapping torso shoulder edge with 7° outward hang
+    const sleeveGeo = new THREE.CylinderGeometry(0.062, 0.050, 0.58, 24);
     const leftSleeve = new THREE.Mesh(sleeveGeo, garmentMat);
-    leftSleeve.position.set(-0.31, 1.25, 0);
-    leftSleeve.rotation.z = Math.PI / 12;
+    leftSleeve.position.set(-0.265, 1.235, 0);
+    leftSleeve.rotation.z = -(7 * Math.PI) / 180; // ~7 deg outward angle
     leftSleeve.castShadow = !isSoftwareGl;
     mannequinGroup.add(leftSleeve);
 
     const rightSleeve = new THREE.Mesh(sleeveGeo, garmentMat);
-    rightSleeve.position.set(0.31, 1.25, 0);
-    rightSleeve.rotation.z = -Math.PI / 12;
+    rightSleeve.position.set(0.265, 1.235, 0);
+    rightSleeve.rotation.z = (7 * Math.PI) / 180; // ~7 deg outward angle
     rightSleeve.castShadow = !isSoftwareGl;
     mannequinGroup.add(rightSleeve);
 
-    // Gold Cuffs at Wrists
-    const cuffGeo = new THREE.CylinderGeometry(0.062, 0.062, 0.04, 20);
+    // Shoulder Cap Spheres in coat color to seamlessly hide the shoulder joint
+    const shoulderCapGeo = new THREE.SphereGeometry(0.066, 20, 16);
+    const leftShoulderCap = new THREE.Mesh(shoulderCapGeo, garmentMat);
+    leftShoulderCap.position.set(-0.24, 1.50, 0);
+    mannequinGroup.add(leftShoulderCap);
+
+    const rightShoulderCap = new THREE.Mesh(shoulderCapGeo, garmentMat);
+    rightShoulderCap.position.set(0.24, 1.50, 0);
+    mannequinGroup.add(rightShoulderCap);
+
+    // Gold Cuffs at Wrists: thin ring attached exactly at sleeve end
+    const cuffGeo = new THREE.CylinderGeometry(0.053, 0.053, 0.035, 24);
     const leftCuff = new THREE.Mesh(cuffGeo, tillaGoldMat);
-    leftCuff.position.set(-0.38, 0.98, 0);
-    leftCuff.rotation.z = Math.PI / 12;
-    mannequinGroup.add(leftCuff);
+    leftCuff.position.set(0, -0.275, 0);
+    leftSleeve.add(leftCuff);
 
     const rightCuff = new THREE.Mesh(cuffGeo, tillaGoldMat);
-    rightCuff.position.set(0.38, 0.98, 0);
-    rightCuff.rotation.z = -Math.PI / 12;
-    mannequinGroup.add(rightCuff);
+    rightCuff.position.set(0, -0.275, 0);
+    rightSleeve.add(rightCuff);
 
-    // Flared Ghera / Lower Coat based on silhouette
+    // Flared Ghera / Lower Coat: slimmer flare (about 60% of original bottom radius) like a sherwani, not a bell
     const isAnarkali = garmentSilhouette === 'anarkali';
     const isKurta = garmentSilhouette === 'kurta';
     const flareRadiusTop = 0.21;
-    const flareRadiusBottom = isAnarkali ? 0.48 : isKurta ? 0.32 : 0.38;
+    const flareRadiusBottom = (isAnarkali ? 0.48 : isKurta ? 0.32 : 0.38) * 0.6;
     const flareHeight = isAnarkali ? 0.75 : 0.62;
     const flareGeo = new THREE.CylinderGeometry(flareRadiusTop, flareRadiusBottom, flareHeight, 32);
     const flare = new THREE.Mesh(flareGeo, garmentMat);
     flare.position.y = isAnarkali ? 0.68 : 0.75;
     flare.castShadow = !isSoftwareGl;
     mannequinGroup.add(flare);
+
+    // Thin gold hem band at bottom of coat (same gold as collar and cuffs)
+    const hemGeo = new THREE.CylinderGeometry(
+      flareRadiusBottom + 0.003,
+      flareRadiusBottom + 0.003,
+      0.024,
+      32,
+      1,
+      true
+    );
+    const hemBand = new THREE.Mesh(hemGeo, tillaGoldMat);
+    hemBand.position.set(0, -flareHeight / 2 + 0.012, 0);
+    flare.add(hemBand);
 
     // Trousers / Bottom Wear (Shalwar / Churidar / Sharara)
     const legGeo = new THREE.CylinderGeometry(0.08, 0.07, 0.45, 20);
@@ -613,60 +669,32 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
     rightLeg.position.set(0.1, 0.32, 0);
     mannequinGroup.add(rightLeg);
 
-    // Mandarin Ban Collar
-    const collarGeo = new THREE.TorusGeometry(0.12, 0.032, 16, 32, Math.PI * 1.85);
+    // Mandarin Ban Collar in same gold as hem band: small horizontal ring flat on X axis around neck, just below gold ball
+    const collarGeo = new THREE.TorusGeometry(0.088, 0.016, 16, 36);
     collarGeo.rotateX(Math.PI / 2);
-    collarGeo.rotateZ(-Math.PI * 0.92);
-    const collar = new THREE.Mesh(collarGeo, garmentMat);
-    collar.position.set(0, 1.58, 0);
+    const collar = new THREE.Mesh(collarGeo, tillaGoldMat);
+    collar.position.set(0, 1.575, 0);
     mannequinGroup.add(collar);
 
-    // Tilla Gold Placket
+    // Tilla Gold Placket (hidden when photo texture is shown)
     const placketGeo = new THREE.BoxGeometry(0.045, 0.42, 0.012);
     const placket = new THREE.Mesh(placketGeo, tillaGoldMat);
-    placket.position.set(0, 1.34, 0.22);
+    placket.position.set(0, 1.34, 0.242);
+    placket.visible = !Boolean(uploadedPhotoUrl && usePhotoTexture);
     mannequinGroup.add(placket);
 
-    // Gold Buttons
+    // Gold Buttons (hidden when photo texture is shown)
     const buttonGeo = new THREE.CylinderGeometry(0.01, 0.01, 0.008, 12);
     buttonGeo.rotateX(Math.PI / 2);
     const buttonsGroup = new THREE.Group();
     const btnCount = isKurta ? 4 : 6;
     for (let i = 0; i < btnCount; i++) {
       const btn = new THREE.Mesh(buttonGeo, brassMat);
-      btn.position.set(0, 1.48 - i * 0.065, 0.23);
+      btn.position.set(0, 1.48 - i * 0.065, 0.25);
       buttonsGroup.add(btn);
     }
+    buttonsGroup.visible = !Boolean(uploadedPhotoUrl && usePhotoTexture);
     mannequinGroup.add(buttonsGroup);
-
-    // Left Chest Pocket Square for Sherwani / Prince Coat
-    if (garmentSilhouette === 'sherwani' || garmentSilhouette === 'prince-coat') {
-      const pocketSquare = new THREE.Mesh(
-        new THREE.BoxGeometry(0.05, 0.025, 0.01),
-        new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 })
-      );
-      pocketSquare.position.set(-0.12, 1.42, 0.22);
-      mannequinGroup.add(pocketSquare);
-    }
-
-    // Royal Draped Shawl / Dupatta
-    const shawlCurve = new THREE.CatmullRomCurve3([
-      new THREE.Vector3(-0.32, 1.48, -0.05),
-      new THREE.Vector3(-0.28, 1.52, 0.12),
-      new THREE.Vector3(-0.16, 1.35, 0.26),
-      new THREE.Vector3(-0.26, 0.95, 0.24),
-      new THREE.Vector3(-0.28, 0.55, 0.18),
-    ]);
-    const shawlGeo = new THREE.TubeGeometry(shawlCurve, 32, 0.07, 12, false);
-    const shawlMat = new THREE.MeshPhysicalMaterial({
-      color: new THREE.Color(upperColor).offsetHSL(0.03, 0.1, -0.05),
-      roughness: 0.7,
-      metalness: 0.0,
-      clearcoat: 0.1,
-    });
-    const shawl = new THREE.Mesh(shawlGeo, shawlMat);
-    shawl.castShadow = !isSoftwareGl;
-    mannequinGroup.add(shawl);
 
     // Khussa / Shoes
     const shoeMat = new THREE.MeshStandardMaterial({
@@ -694,12 +722,16 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
 
     sceneElementsRef.current = {
       mannequinGroup,
-      garmentMaterials: [garmentMat, shawlMat],
+      garmentMaterials: [garmentMat],
       trouserMaterial: trouserMat,
       buttonMaterials: [brassMat],
       goldTrimMaterials: [tillaGoldMat],
       torsoMesh: torso,
       flareMesh: flare,
+      frontDecalMesh,
+      frontDecalMaterial: frontDecalMat,
+      placketMesh: placket,
+      buttonsGroup,
     };
 
     // 8. 60 FPS Loop with performance.now() and isTurntableActiveRef
@@ -755,90 +787,271 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
     };
   }, [isOpen, garmentSilhouette]);
 
-  // Texture mapping for uploaded photo directly onto mannequin torso & flare
+  // Texture mapping for uploaded photo: ONLY ONCE on front arc of torso (cropped upper garment)
   useEffect(() => {
+    const decalMesh = sceneElementsRef.current.frontDecalMesh;
+    const decalMat = sceneElementsRef.current.frontDecalMaterial;
+    const placketMesh = sceneElementsRef.current.placketMesh;
+    const buttonsGroup = sceneElementsRef.current.buttonsGroup;
+
+    // 7) The "Use plain colors" toggle must remove the texture and show only the colors
     if (!uploadedPhotoUrl || !usePhotoTexture) {
-      sceneElementsRef.current.garmentMaterials.forEach((mat) => {
-        mat.map = null;
-        mat.needsUpdate = true;
-      });
+      if (decalMesh) decalMesh.visible = false;
+      if (decalMat) {
+        if (decalMat.map) {
+          decalMat.map.dispose();
+          decalMat.map = null;
+        }
+        decalMat.needsUpdate = true;
+      }
+      // 4) Show 3D gold placket and buttons in "Use plain colors" mode
+      if (placketMesh) placketMesh.visible = true;
+      if (buttonsGroup) buttonsGroup.visible = true;
       return;
     }
 
-    const loader = new THREE.TextureLoader();
-    loader.load(
-      uploadedPhotoUrl,
-      (texture) => {
-        texture.colorSpace = THREE.SRGBColorSpace;
-        texture.wrapS = THREE.RepeatWrapping;
-        texture.wrapT = THREE.RepeatWrapping;
-        texture.repeat.set(1.5, 1.5);
+    // 4) Hide extra 3D gold placket and buttons when photo texture is shown
+    if (placketMesh) placketMesh.visible = false;
+    if (buttonsGroup) buttonsGroup.visible = false;
 
-        sceneElementsRef.current.garmentMaterials.forEach((mat) => {
-          mat.map = texture;
-          mat.needsUpdate = true;
-        });
-      },
-      undefined,
-      (err) => console.warn('Could not load uploaded outfit texture in 3D studio:', err)
-    );
-  }, [uploadedPhotoUrl, usePhotoTexture, isOpen]);
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const natW = img.naturalWidth || img.width || 512;
+      const natH = img.naturalHeight || img.height || 512;
+
+      // 1) BACKGROUND REMOVAL: sample 4 corner pixels as background color
+      const scanCanvas = document.createElement('canvas');
+      scanCanvas.width = natW;
+      scanCanvas.height = natH;
+      const scanCtx = scanCanvas.getContext('2d');
+      if (!scanCtx) return;
+
+      scanCtx.drawImage(img, 0, 0);
+      const imgDataObj = scanCtx.getImageData(0, 0, natW, natH);
+      const px = imgDataObj.data;
+
+      // Sample 4 corner pixels (top-left, top-right, bottom-left, bottom-right)
+      const getCornerPixel = (x: number, y: number) => {
+        const idx = (y * natW + x) * 4;
+        return [px[idx], px[idx + 1], px[idx + 2]];
+      };
+      const corners = [
+        getCornerPixel(Math.min(8, natW - 1), Math.min(8, natH - 1)),
+        getCornerPixel(Math.max(0, natW - 9), Math.min(8, natH - 1)),
+        getCornerPixel(Math.min(8, natW - 1), Math.max(0, natH - 9)),
+        getCornerPixel(Math.max(0, natW - 9), Math.max(0, natH - 9)),
+      ];
+      const bgR = corners.reduce((acc, c) => acc + c[0], 0) / 4;
+      const bgG = corners.reduce((acc, c) => acc + c[1], 0) / 4;
+      const bgB = corners.reduce((acc, c) => acc + c[2], 0) / 4;
+
+      // Upper garment scan range (avoid pants in lower 42%)
+      const maxScanY = Math.floor(natH * 0.58);
+      let minX = natW, maxX = 0, minY = maxScanY, maxY = 0;
+      let remainingPixels = 0;
+
+      // Make every pixel close to background color (and near-black pixels) fully transparent
+      for (let y = 0; y < maxScanY; y++) {
+        for (let x = 0; x < natW; x++) {
+          const idx = (y * natW + x) * 4;
+          const r = px[idx];
+          const g = px[idx + 1];
+          const b = px[idx + 2];
+          const a = px[idx + 3];
+
+          // Color distance to sampled corner background
+          const diffBg = Math.hypot(r - bgR, g - bgG, b - bgB);
+          // Near-black pixels / dark strips
+          const isNearBlack = r < 24 && g < 24 && b < 24;
+
+          if (a < 100 || diffBg < 45 || isNearBlack) {
+            px[idx + 3] = 0; // fully transparent
+          } else {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+            remainingPixels++;
+          }
+        }
+      }
+
+      // Ensure lower half (pants/shoes) is 100% transparent
+      for (let y = maxScanY; y < natH; y++) {
+        for (let x = 0; x < natW; x++) {
+          const idx = (y * natW + x) * 4;
+          px[idx + 3] = 0;
+        }
+      }
+
+      scanCtx.putImageData(imgDataObj, 0, 0);
+
+      // Crop to the bounding box of the remaining garment pixels
+      let cropX = natW * 0.15;
+      let cropY = natH * 0.04;
+      let cropW = natW * 0.70;
+      let cropH = natH * 0.52;
+
+      if (remainingPixels > 100 && maxX > minX && maxY > minY) {
+        cropX = minX;
+        cropY = minY;
+        cropW = maxX - minX + 1;
+        cropH = maxY - minY + 1;
+      }
+
+      // 2) DECAL BLEND: scale the cutout decal so it spans the torso width (512x512)
+      const canvas = document.createElement('canvas');
+      canvas.width = 512;
+      canvas.height = 512;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, 512, 512);
+        ctx.drawImage(scanCanvas, cropX, cropY, cropW, cropH, 0, 0, 512, 512);
+
+        // Sample dominant color from non-transparent coat pixels
+        try {
+          const cutoutData = ctx.getImageData(0, 0, 512, 435).data;
+          let rSum = 0, gSum = 0, bSum = 0, sampleCount = 0;
+          for (let i = 0; i < cutoutData.length; i += 16) {
+            const a = cutoutData[i + 3];
+            if (a > 180) {
+              rSum += cutoutData[i];
+              gSum += cutoutData[i + 1];
+              bSum += cutoutData[i + 2];
+              sampleCount++;
+            }
+          }
+          if (sampleCount > 0) {
+            const sampledR = Math.round(rSum / sampleCount);
+            const sampledG = Math.round(gSum / sampleCount);
+            const sampledB = Math.round(bSum / sampleCount);
+            const sampledHex = `#${((1 << 24) + (sampledR << 16) + (sampledG << 8) + sampledB).toString(16).slice(1)}`;
+            setUpperColor(sampledHex);
+            setSelectedPalette(sampledHex);
+
+            const sampledColor = new THREE.Color(sampledHex);
+            sceneElementsRef.current.garmentMaterials.forEach((m) => {
+              m.color = sampledColor;
+              m.needsUpdate = true;
+            });
+          }
+        } catch (sampleErr) {
+          console.warn('Coat color sampling error:', sampleErr);
+        }
+
+        // Fades into plain coat color at bottom edge: soft gradient mask over last 15% of decal
+        ctx.save();
+        ctx.globalCompositeOperation = 'destination-out';
+        const fadeGrad = ctx.createLinearGradient(0, 512 * 0.85, 0, 512);
+        fadeGrad.addColorStop(0, 'rgba(0, 0, 0, 0)'); // no fade
+        fadeGrad.addColorStop(1, 'rgba(0, 0, 0, 1)'); // 100% transparent at bottom edge
+        ctx.fillStyle = fadeGrad;
+        ctx.fillRect(0, Math.floor(512 * 0.85), 512, Math.ceil(512 * 0.15));
+        ctx.restore();
+      }
+
+      const texture = new THREE.CanvasTexture(canvas);
+      // 1) Show ONLY ONCE on front: wrapS/wrapT = ClampToEdgeWrapping, repeat 1x1
+      texture.wrapS = THREE.ClampToEdgeWrapping;
+      texture.wrapT = THREE.ClampToEdgeWrapping;
+      texture.repeat.set(1, 1);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.needsUpdate = true;
+
+      if (decalMat) {
+        if (decalMat.map) decalMat.map.dispose();
+        decalMat.map = texture;
+        decalMat.color = new THREE.Color(0xffffff);
+        decalMat.metalness = 0;
+        decalMat.roughness = 0.7;
+        decalMat.clearcoat = 0.0;
+        decalMat.transparent = true;
+        decalMat.depthWrite = false;
+        decalMat.alphaTest = 0.01;
+        decalMat.needsUpdate = true;
+      }
+      if (decalMesh) {
+        decalMesh.visible = true;
+      }
+    };
+    img.onerror = (err) => console.warn('Could not process uploaded outfit texture in 3D studio:', err);
+    img.src = uploadedPhotoUrl;
+  }, [uploadedPhotoUrl, usePhotoTexture, isOpen, garmentSilhouette]);
 
   // Live Fabric Color & Finish Updates
   useEffect(() => {
     const upperCol = new THREE.Color(upperColor);
     sceneElementsRef.current.garmentMaterials.forEach((mat) => {
       mat.color = upperCol;
+      mat.clearcoat = 0.0;
       if (fabricFinish === 'velvet') {
         mat.roughness = 0.85;
         mat.metalness = 0.0;
-        mat.clearcoat = 0.12;
       } else if (fabricFinish === 'raw-silk') {
         mat.roughness = 0.7;
         mat.metalness = 0.0;
-        mat.clearcoat = 0.2;
       } else {
         // brocade
         mat.roughness = 0.45;
         mat.metalness = 0.35;
-        mat.clearcoat = 0.45;
       }
       mat.needsUpdate = true;
     });
+
+    // When texture is applied, keep front decal material transparent with depthWrite: false so underlying plain coat color blends seamlessly
+    if (sceneElementsRef.current.frontDecalMaterial && usePhotoTexture && uploadedPhotoUrl) {
+      sceneElementsRef.current.frontDecalMaterial.color.set(0xffffff);
+      sceneElementsRef.current.frontDecalMaterial.roughness = 0.7;
+      sceneElementsRef.current.frontDecalMaterial.metalness = 0.0;
+      sceneElementsRef.current.frontDecalMaterial.clearcoat = 0.0;
+      sceneElementsRef.current.frontDecalMaterial.transparent = true;
+      sceneElementsRef.current.frontDecalMaterial.depthWrite = false;
+      sceneElementsRef.current.frontDecalMaterial.alphaTest = 0.01;
+      sceneElementsRef.current.frontDecalMaterial.needsUpdate = true;
+    }
 
     if (sceneElementsRef.current.trouserMaterial) {
       sceneElementsRef.current.trouserMaterial.color = new THREE.Color(lowerColor);
       sceneElementsRef.current.trouserMaterial.needsUpdate = true;
     }
-  }, [upperColor, lowerColor, fabricFinish]);
+  }, [upperColor, lowerColor, fabricFinish, usePhotoTexture, uploadedPhotoUrl]);
 
   if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-slate-950/90 text-white backdrop-blur-3xl animate-in fade-in zoom-in-95 duration-300 overflow-hidden">
       {/* Top Header Badge & Navigation Controls */}
-      <header className="absolute inset-x-0 top-0 z-30 flex items-center justify-between px-4 sm:px-6 py-3.5 bg-gradient-to-b from-black/85 via-black/40 to-transparent pointer-events-none">
-        <div className="flex items-center gap-3 pointer-events-auto">
-          <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-purple-600/30 border border-purple-500/40 text-purple-300 shadow-lg">
-            <Sparkles size={20} />
+      <header className="absolute inset-x-0 top-0 z-30 flex items-center justify-between px-2.5 sm:px-6 py-2 sm:py-3.5 bg-gradient-to-b from-black/85 via-black/40 to-transparent pointer-events-none">
+        <div className="flex items-center gap-2 sm:gap-3 pointer-events-auto min-w-0">
+          <div className="flex h-7 w-7 sm:h-10 sm:w-10 items-center justify-center rounded-xl sm:rounded-2xl bg-purple-600/30 border border-purple-500/40 text-purple-300 shadow-lg shrink-0">
+            <Sparkles size={16} className="sm:hidden" />
+            <Sparkles size={20} className="hidden sm:block" />
           </div>
-          <div>
+          <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h2 className="font-display text-lg sm:text-xl font-bold tracking-tight text-white drop-shadow-md">
+              {/* Mobile: single-row title "3D Runway", truncate, one line */}
+              <h2 className="sm:hidden font-display text-sm font-bold tracking-tight text-white drop-shadow-md truncate">
+                3D Runway
+              </h2>
+              {/* Desktop: full title */}
+              <h2 className="hidden sm:block font-display text-lg sm:text-xl font-bold tracking-tight text-white drop-shadow-md">
                 3D Runway & Dress Studio
               </h2>
-              <span className="rounded-full bg-emerald-500/20 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+              {/* Hide PBR Haute Couture badge on mobile */}
+              <span className="hidden sm:inline-flex rounded-full bg-emerald-500/20 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
                 PBR Haute Couture
               </span>
             </div>
-            <p className="text-xs text-slate-300 drop-shadow-sm">
+            {/* No subtitle on mobile */}
+            <p className="hidden sm:block text-xs text-slate-300 drop-shadow-sm">
               {outfitSpec.lookName} · {gender === 'men' ? 'Mardana Couture' : 'Zanana Couture'}
             </p>
           </div>
         </div>
 
         {/* Action Bar (Angle buttons, Zoom, Auto-Spin, Photo Upload, Close) */}
-        <div className="flex items-center gap-2 pointer-events-auto">
+        <div className="flex items-center gap-1 sm:gap-2 pointer-events-auto shrink-0">
           {/* Hidden File Input for Outfit Photo Upload */}
           <input
             ref={uploadInputRef}
@@ -848,18 +1061,18 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
             onChange={handlePhotoUpload}
           />
 
-          {/* Upload Outfit Photo Button */}
+          {/* Upload Outfit Photo Button (Icon-only on mobile) */}
           <button
             onClick={() => uploadInputRef.current?.click()}
-            className="flex items-center gap-1.5 rounded-xl border border-purple-400/40 bg-purple-600/30 px-3 py-1.5 text-xs font-semibold text-white shadow-md hover:bg-purple-600/50 hover:border-purple-300 transition cursor-pointer"
+            className="flex items-center justify-center p-1.5 sm:px-3 sm:py-1.5 rounded-lg sm:rounded-xl border border-purple-400/40 bg-purple-600/30 text-xs font-semibold text-white shadow-md hover:bg-purple-600/50 hover:border-purple-300 transition cursor-pointer"
             title="Upload photo of your actual clothes to map in 3D"
+            aria-label="Upload Outfit Photo"
           >
-            <Upload size={13} className="text-purple-300" />
-            <span className="hidden sm:inline">Upload Outfit Photo</span>
-            <span className="sm:hidden">Upload</span>
+            <Upload size={14} className="text-purple-300" />
+            <span className="hidden sm:inline ml-1.5">Upload Outfit Photo</span>
           </button>
 
-          {/* Multi-Angle Presets */}
+          {/* Multi-Angle Presets (Hidden on mobile) */}
           <div className="hidden sm:flex items-center rounded-xl border border-white/20 bg-black/60 p-1 backdrop-blur-2xl">
             {(
               [
@@ -883,89 +1096,92 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
           </div>
 
           {/* Zoom In / Zoom Out Controls */}
-          <div className="flex items-center rounded-xl border border-white/20 bg-black/60 p-0.5 backdrop-blur-2xl">
+          <div className="flex items-center rounded-lg sm:rounded-xl border border-white/20 bg-black/60 p-0.5 backdrop-blur-2xl">
             <button
               onClick={() => handleZoom('in')}
-              className="p-1.5 text-slate-300 hover:text-white hover:bg-white/10 rounded-lg transition cursor-pointer"
+              className="p-1 sm:p-1.5 text-slate-300 hover:text-white hover:bg-white/10 rounded-md sm:rounded-lg transition cursor-pointer"
               title="Zoom In (+)"
               aria-label="Zoom In"
             >
-              <ZoomIn size={15} />
+              <ZoomIn size={14} />
             </button>
             <button
               onClick={() => handleZoom('out')}
-              className="p-1.5 text-slate-300 hover:text-white hover:bg-white/10 rounded-lg transition cursor-pointer"
+              className="p-1 sm:p-1.5 text-slate-300 hover:text-white hover:bg-white/10 rounded-md sm:rounded-lg transition cursor-pointer"
               title="Zoom Out (-)"
               aria-label="Zoom Out"
             >
-              <ZoomOut size={15} />
+              <ZoomOut size={14} />
             </button>
           </div>
 
-          {/* 360 Turntable Toggle */}
+          {/* 360 Turntable Toggle (Icon only on mobile) */}
           <button
             onClick={() => setIsTurntableActive((prev) => !prev)}
-            className={`rounded-xl border px-3 py-1.5 text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
+            className={`rounded-lg sm:rounded-xl border p-1.5 sm:px-3 sm:py-1.5 text-xs font-semibold transition cursor-pointer flex items-center justify-center gap-1.5 ${
               isTurntableActive
                 ? 'bg-purple-600/50 border-purple-400 text-white shadow-md'
                 : 'bg-black/60 border-white/20 text-slate-300 hover:bg-white/10'
             }`}
             title="Toggle 360 Turntable Spin"
+            aria-label="Toggle 360 Spin"
           >
-            <RotateCcw size={13} className={isTurntableActive ? 'animate-spin' : ''} />
+            <RotateCcw size={14} className={isTurntableActive ? 'animate-spin' : ''} />
             <span className="hidden md:inline">Auto-360° Spin</span>
           </button>
 
           {/* Reset Look Button */}
           <button
             onClick={handleResetLook}
-            className="rounded-xl border border-white/20 bg-black/60 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-white/10 hover:text-white transition cursor-pointer flex items-center gap-1.5"
+            className="hidden sm:flex rounded-xl border border-white/20 bg-black/60 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-white/10 hover:text-white transition cursor-pointer items-center gap-1.5"
             title="Reset to default camera & styling"
           >
             <RotateCcw size={13} />
             <span className="hidden lg:inline">Reset</span>
           </button>
 
-          {/* Close Modal */}
+          {/* Close Modal (Always visible, small size on mobile) */}
           <button
             onClick={onClose}
-            className="rounded-xl border border-white/20 bg-black/60 p-2 text-slate-300 hover:bg-rose-500/30 hover:border-rose-400 hover:text-white transition cursor-pointer"
+            className="rounded-lg sm:rounded-xl border border-white/20 bg-black/60 p-1.5 sm:p-2 text-slate-300 hover:bg-rose-500/30 hover:border-rose-400 hover:text-white transition cursor-pointer"
             aria-label="Close 3D Runway"
           >
-            <X size={18} />
+            <X size={16} className="sm:hidden" />
+            <X size={18} className="hidden sm:block" />
           </button>
         </div>
       </header>
 
-      {/* Floating Top Custom Prompt Dress Studio Bar */}
-      <div className="absolute top-18 inset-x-0 z-20 flex justify-center px-4 pointer-events-none">
+      {/* Floating Top Custom Prompt Dress Studio Bar with top margin below header */}
+      <div className="absolute top-12 sm:top-18 mt-1 sm:mt-0 inset-x-0 z-20 flex justify-center px-3 sm:px-4 pointer-events-none">
         <form
           onSubmit={handleRenderCustomLook}
-          className="w-full max-w-2xl pointer-events-auto rounded-2xl border border-white/25 bg-slate-900/80 p-2 shadow-2xl backdrop-blur-3xl flex items-center gap-2"
+          className="w-full max-w-2xl pointer-events-auto rounded-xl sm:rounded-2xl border border-white/25 bg-slate-900/80 p-1.5 sm:p-2 shadow-2xl backdrop-blur-3xl flex items-center gap-2"
         >
-          <div className="flex items-center pl-2 text-purple-400">
-            <Sparkles size={16} />
+          <div className="flex items-center pl-1 sm:pl-2 text-purple-400">
+            <Sparkles size={14} className="sm:hidden" />
+            <Sparkles size={16} className="hidden sm:block" />
           </div>
           <input
             type="text"
             value={customPrompt}
             onChange={(e) => setCustomPrompt(e.target.value)}
             placeholder="Customize 3D outfit (e.g. 'Pant white and coat blue sherwani', 'emerald kurta')..."
-            className="flex-1 bg-transparent px-2 py-1 text-xs sm:text-sm text-white placeholder-slate-400 focus:outline-none"
+            className="flex-1 min-w-0 bg-transparent px-2 py-1 text-xs sm:text-sm text-white placeholder-slate-400 focus:outline-none"
           />
           <button
             type="submit"
             disabled={isRenderingLook || !customPrompt.trim()}
-            className="rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 disabled:opacity-40 px-3.5 py-1.5 text-xs font-bold text-white shadow-md transition flex items-center gap-1.5 cursor-pointer shrink-0"
+            className="rounded-lg sm:rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 disabled:opacity-40 px-2.5 sm:px-3.5 py-1.5 text-xs font-bold text-white shadow-md transition flex items-center gap-1.5 cursor-pointer shrink-0"
           >
             {isRenderingLook ? (
               <>
-                <RotateCcw size={13} className="animate-spin" />
-                <span>Rendering...</span>
+                <RotateCcw size={12} className="animate-spin" />
+                <span className="hidden sm:inline">Rendering...</span>
               </>
             ) : (
               <>
-                <span>Render 3D Look</span>
+                <span className="hidden sm:inline">Render 3D Look</span>
                 <Send size={12} />
               </>
             )}
@@ -1018,8 +1234,8 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* High-Gloss iOS Liquid Glass Bottom Spec Card & Studio Dock */}
-      <div className="absolute inset-x-0 bottom-4 z-20 flex justify-center px-4 pointer-events-none">
+      {/* High-Gloss Liquid Glass Bottom Spec Card & Mobile Bottom Sheet */}
+      <div className="fixed sm:absolute inset-x-0 bottom-0 sm:bottom-4 z-40 sm:z-20 flex justify-center px-0 sm:px-4 pointer-events-none">
         <div className="w-full max-w-3xl pointer-events-auto flex flex-col items-center">
           {/* Collapse / Expand Toggle */}
           <button
@@ -1041,11 +1257,21 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
           </button>
 
           {!isControlsCollapsed && (
-            <div className="w-full rounded-2xl border border-white/20 bg-slate-900/85 p-4 shadow-2xl backdrop-blur-3xl space-y-3.5">
+            <div className="w-full max-h-[55vh] sm:max-h-none overflow-y-auto rounded-t-2xl sm:rounded-2xl border-t sm:border border-white/20 bg-slate-900/95 sm:bg-slate-900/85 p-3.5 sm:p-4 shadow-2xl backdrop-blur-3xl space-y-3 sm:space-y-3.5">
+              {/* Visible Mobile Close Handle */}
+              <div
+                onClick={() => setIsControlsCollapsed(true)}
+                className="sm:hidden flex flex-col items-center justify-center pb-1 pt-0 cursor-pointer"
+                title="Tap to minimize fabric specs"
+              >
+                <div className="h-1.5 w-12 rounded-full bg-white/40 mb-1" />
+                <span className="text-[10px] text-slate-400 font-medium">Tap to minimize panel</span>
+              </div>
+
               {/* Top row: Unlimited Color Palette, Photo Controls & Weave Finish */}
               <div className="space-y-3 border-b border-white/10 pb-3">
                 {/* Row 1: Unlimited Color Palette & Hex Input */}
-                <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
                   <div className="flex items-center gap-2">
                     <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-200">
                       <Palette size={14} className="text-purple-400" />
@@ -1129,8 +1355,9 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
                               ? 'bg-purple-600 text-white shadow-sm border border-purple-400'
                               : 'bg-white/10 text-slate-300 hover:text-white border border-white/15'
                           }`}
+                          title="Toggle between photo texture and plain colors"
                         >
-                          {usePhotoTexture ? 'Draped on 3D Model' : 'Plain Fabric'}
+                          {usePhotoTexture ? 'Draped on 3D Model' : 'Use plain colors'}
                         </button>
 
                         {/* Thumbnail */}
@@ -1159,12 +1386,12 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
                   </div>
 
                   {/* Fabric Finish */}
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-300">
                       <Layers size={14} className="text-purple-400" />
                       <span>Weave:</span>
                     </div>
-                    <div className="grid grid-cols-3 gap-1.5">
+                    <div className="flex flex-wrap gap-1.5">
                       {[
                         { id: 'raw-silk', label: 'Raw Silk' },
                         { id: 'velvet', label: 'Royal Velvet' },

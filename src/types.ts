@@ -3,6 +3,7 @@ export type Language = 'en' | 'roman' | 'ur';
 export type Gender = 'men' | 'women' | 'unisex';
 export type AgeGroup = 'teen' | 'uni' | 'pro' | 'mature';
 export type StylePreference = 'traditional' | 'minimalist' | 'fusion' | 'luxury';
+export type Season = 'summer' | 'winter' | 'monsoon' | 'festive';
 
 export type CategoryId =
   | 'color'
@@ -37,6 +38,8 @@ export interface StylingAdvice {
   followUpSuggestions?: string[];
   isSpecificAdvice?: boolean;
   specificTopic?: string;
+  topicLabel?: string;
+  topicIcon?: string;
   styleTips?: string[];
 }
 

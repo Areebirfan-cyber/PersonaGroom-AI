@@ -6,27 +6,12 @@
 export function sanitizeInput(input: string | null | undefined): string {
   if (!input) return '';
   
-  // Strip control characters & null bytes
-  let clean = String(input).replace(/[\u0000-\u0008\u000B-\u000C\u000E-\u001F]/g, '');
-
-  // Strip script tags and event handlers
-  clean = clean
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-    .replace(/on\w+\s*=\s*["'][^"']*["']/gi, '')
-    .replace(/on\w+\s*=\s*[^\s>]+/gi, '')
-    .replace(/javascript\s*:/gi, '')
-    .replace(/vbscript\s*:/gi, '')
-    .replace(/data\s*:\s*text\/html/gi, '');
-
-  // Escape basic HTML sensitive delimiters to prevent injection
-  clean = clean
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;');
-
-  return clean.trim();
+  // Keep only: remove control characters, trim, and limit length to 1000 characters
+  // React already escapes text natively, so no HTML entity escaping is needed
+  return String(input)
+    .replace(/[\u0000-\u0008\u000B-\u000C\u000E-\u001F]/g, '')
+    .trim()
+    .slice(0, 1000);
 }
 
 /**
@@ -39,7 +24,8 @@ export function unescapeForDisplay(input: string | null | undefined): string {
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
-    .replace(/&#x27;/g, "'");
+    .replace(/&#x27;/g, "'")
+    .replace(/&#39;/g, "'");
 }
 
 /**

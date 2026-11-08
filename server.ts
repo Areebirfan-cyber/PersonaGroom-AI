@@ -26,7 +26,8 @@ export const MODELS_CONFIG = {
   text: 'gemini-3.1-flash-lite',
   textFallback: ['gemini-flash-latest', 'gemini-2.5-flash'],
   vision: 'gemini-3.1-flash-lite',
-  tts: 'gemini-3.8-flash-lite-tts',
+  tts: 'gemini-3.8-flash-tts',
+  ttsFallback: ['gemini-3.8-flash-lite-tts'],
 } as const;
 
 // Module-level success memory for models
@@ -72,6 +73,13 @@ app.get('/api/health', (_req, res) => {
     modelsConfig: MODELS_CONFIG,
   });
 });
+
+const SEASON_FABRIC_GUIDES: Record<string, string> = {
+  summer: 'Summer Heat (Garmi): Mandate breathable, lightweight, airy fabrics (Premium Swiss Lawn, Cambric, Pure Cotton, Light Voile, Latha, Boski). Avoid heavy velvet, thick brocade, or suffocating wool. Keep silhouettes breezy, comfortable, and refreshing.',
+  winter: 'Winter Chill (Sardi): Mandate insulating, luxurious cold-weather fabrics (Micro-Plush Royal Velvet, Pashmina, Marina, Heavy Karandi, Cashmere Blends, Pure Raw Silk 100g, Tweed Waistcoats). Prioritize rich layered warmth and deep winter jewel tones.',
+  monsoon: 'Monsoon (Barsat): Mandate humidity-resistant, quick-dry, crease-resistant fabrics (Wash-and-Wear micro-twill, Poly-Viscose blends, Lightweight Chiffon, Georgette). Avoid delicate silks or starch latha that ruin in rain/humidity.',
+  festive: 'Festive / Shadi Season: Mandate opulent ceremonial heritage fabrics (Pure Raw Silk, Banarsi Brocade, Jamawar, Organza with Tilla Gota, Embroidered Velvet, Katan Silk). Emphasize grand celebratory cuts, rich borders, and antique metallic threadwork.',
+};
 
 const STYLE_DESCRIPTIONS: Record<string, string> = {
   traditional: 'Traditional Pakistani Heritage (classical silhouettes like kalidar, sherwani, traditional shalwar, authentic embroidery, gota, tilla, hand-loomed heritage fabrics)',
@@ -391,10 +399,10 @@ app.post('/api/agent/consult', async (req, res) => {
       language = 'roman',
       category = 'festive',
       stylePreference = 'traditional',
+      season = 'festive',
       image,
       history = [],
       learningProfile,
-      apiKey,
     } = req.body;
 
     if (!prompt && !image) {
@@ -402,26 +410,18 @@ app.post('/api/agent/consult', async (req, res) => {
     }
 
     // 5-minute memory cache lookup
-    const cacheKey = JSON.stringify({ prompt, gender, ageGroup, language, category, stylePreference, hasImage: Boolean(image) });
+    const cacheKey = JSON.stringify({ prompt, gender, ageGroup, language, category, stylePreference, season, hasImage: Boolean(image) });
     const cached = consultCache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < CONSULT_CACHE_TTL_MS) {
       return res.json({ ...cached.data, fromCache: true });
     }
 
-    const effectiveApiKey = apiKey || process.env.GEMINI_API_KEY || '';
-    if (!effectiveApiKey) {
+    if (!process.env.GEMINI_API_KEY) {
       return res.status(503).json({
         error: 'No Gemini API key available. Falling back to offline fashion intelligence.',
         useFallback: true,
       });
     }
-
-    const activeAi = apiKey
-      ? new GoogleGenAI({
-          apiKey,
-          httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-        })
-      : ai;
 
     let learningInstruction = '';
     if (learningProfile && learningProfile.totalRatings > 0) {
@@ -477,6 +477,8 @@ CRITICAL INSTRUCTIONS & STRICT CONVERSATIONAL CONSTRAINTS:
      - Set 'isSpecificAdvice': true.
      - Set 'specificTopic': Short topic title (e.g. "Haircut & Beard Grooming", "Signature Fragrance & Attar", "Footwear Craft", "Royal Etiquette").
      - Set 'styleTips': exactly 2 short, high-value optional style tips relevant to this specific topic.
+- SEASON & FABRIC DIRECTIVE: The user has selected the season "${season.toUpperCase()}". You MUST strictly tailor all fabric recommendations and layering advice to this season:
+  ${SEASON_FABRIC_GUIDES[season] || SEASON_FABRIC_GUIDES.festive}
 - STYLE PREFERENCE ENFORCEMENT: The user's chosen style preference is "${STYLE_DESCRIPTIONS[stylePreference] || stylePreference}". You MUST deliberately shape all silhouette cuts, color choices, embellishment density, fabric choices, and styling details around this exact aesthetic mood.${learningInstruction}
 - ABSOLUTE UNIVERSITY RULE: NEVER mention "university", "uni", "college", "campus", "assignments", or "student life" UNLESS the user explicitly mentions words like "uni", "university", "college", "campus", or "classes" in their message! If the user asks about Eid, wedding, Barat, Nikkah, Walima, party, casual wear, office, dinner, or travel, give advice tailored STRICTLY for that specific occasion without mentioning university!
 - DYNAMIC, NON-REPETITIVE ADVICE: NEVER give identical or boilerplate responses. Tailor every piece of advice to the unique prompt, occasion, colors, and vibe the user asked about. Be creative, specific, and culturally sophisticated. If answering follow-ups, build upon the previous conversation rather than repeating previous points.
@@ -503,6 +505,7 @@ CRITICAL INSTRUCTIONS & STRICT CONVERSATIONAL CONSTRAINTS:
     const userMessageContent = `User Request: ${prompt || 'Analyze this outfit/fabric and give complete styling advice.'}
 Target Gender: ${gender}
 Target Age Group: ${AGE_LABELS[ageGroup] || ageGroup}
+Selected Season: ${season.toUpperCase()} (${SEASON_FABRIC_GUIDES[season] || ''})
 Selected Style Preference: ${STYLE_DESCRIPTIONS[stylePreference] || stylePreference}${memoryStatusNote}
 Requested Language: ${language}
 Context Category: ${category}${historyBlock}`;
@@ -531,7 +534,7 @@ Context Category: ${category}${historyBlock}`;
     for (const modelName of modelsToTry) {
       try {
         const response = await withTimeout(
-          activeAi.models.generateContent({
+          ai.models.generateContent({
             model: modelName,
             contents: { parts },
             config: {
@@ -596,21 +599,87 @@ Context Category: ${category}${historyBlock}`;
       throw lastError || new Error('All models exhausted');
     }
 
-    // Attach instant bespoke visual (procedural SVG or local asset) immediately with zero latency
-    try {
-      const outfitVisual = generateOutfitVisualForAdvice(
-        prompt || parsed.top,
-        parsed,
-        gender,
-        stylePreference
-      );
-      parsed.customAiImageUrl = outfitVisual.imageUrl;
-      parsed.fallbackImageUrl = outfitVisual.fallbackUrl;
-      parsed.dynamicPrompt = outfitVisual.prompt;
-      parsed.customAiImageCaption = outfitVisual.caption;
+    // -------------------------------------------------------------
+    // Image Relevance Gate: Only attach outfit visual when clothing
+    // If parsed.isSpecificAdvice is true and the topic is not clothing,
+    // do NOT attach customAiImageUrl. Instead return topicLabel & topicIcon.
+    // If a shoes topic, use /assets/shoes_craft.jpg.
+    // -------------------------------------------------------------
+    const userPromptLower = (prompt || '').toLowerCase();
+    const introLower = (parsed.intro || '').toLowerCase();
+    const topicLower = (parsed.specificTopic || '').toLowerCase();
+    const combinedText = `${userPromptLower} ${introLower} ${topicLower}`;
+
+    const isFragrance = /\b(fragrance|perfume|attar|itr|scent|cologne|oud|khus)\b/i.test(combinedText);
+    const isSkincare = /\b(skincare|skin|acne|face wash|glow|sunscreen|moisturizer|complexion)\b/i.test(combinedText);
+    const isHair = /\b(hair|haircut|beard|khat|fade|moustache|hairstyle|shave|trimmer|barber)\b/i.test(combinedText);
+    const isEtiquette = /\b(etiquette|adab|manners|posture|handshake|body language|speaking|greeting|protocol)\b/i.test(combinedText);
+    const isAccessories = /\b(watch|watches|cufflinks|pocket square|brooch|ring|glasses|sunglasses|accessories|jewel|jewelry)\b/i.test(combinedText);
+    const isGymHygiene = /\b(gym|workout|fitness|diet|hygiene|smell|deodorant|shower|teeth|breath)\b/i.test(combinedText);
+    const isShoes = /\b(shoe|shoes|khussa|chappal|peshawari|sneaker|loafers|oxford|derby|boots|footwear)\b/i.test(combinedText);
+
+    const isNonClothingTopic =
+      Boolean(parsed.isSpecificAdvice) ||
+      (!parsed.top && !parsed.bottom && !parsed.darziTip) ||
+      isFragrance ||
+      isSkincare ||
+      isHair ||
+      isEtiquette ||
+      isAccessories ||
+      isGymHygiene ||
+      (isShoes && !parsed.top);
+
+    if (isShoes && (!parsed.top || parsed.isSpecificAdvice)) {
+      parsed.customAiImageUrl = '/assets/shoes_craft.jpg';
+      parsed.fallbackImageUrl = '/assets/shoes_craft.jpg';
+      parsed.topicLabel = 'Footwear & Traditional Craft';
+      parsed.topicIcon = 'shoes';
+      parsed.customAiImageCaption = 'Traditional Handcrafted Footwear';
       parsed.isAiGenerated = false;
-    } catch (visErr: any) {
-      console.warn('Auto outfit visual generation warning:', visErr.message);
+    } else if (isNonClothingTopic) {
+      // Non-clothing topic: do NOT attach customAiImageUrl
+      delete parsed.customAiImageUrl;
+      delete parsed.fallbackImageUrl;
+
+      if (isFragrance) {
+        parsed.topicLabel = 'Signature Fragrance & Attar';
+        parsed.topicIcon = 'fragrance';
+      } else if (isSkincare) {
+        parsed.topicLabel = 'Skincare & Grooming Ritual';
+        parsed.topicIcon = 'skincare';
+      } else if (isHair) {
+        parsed.topicLabel = 'Haircut & Beard Grooming';
+        parsed.topicIcon = 'hair';
+      } else if (isEtiquette) {
+        parsed.topicLabel = 'Elegance & Royal Etiquette';
+        parsed.topicIcon = 'etiquette';
+      } else if (isAccessories) {
+        parsed.topicLabel = 'Watches & Accessories';
+        parsed.topicIcon = 'accessories';
+      } else if (isGymHygiene) {
+        parsed.topicLabel = 'Fitness & Personal Hygiene';
+        parsed.topicIcon = 'sparkles';
+      } else {
+        parsed.topicLabel = parsed.specificTopic || 'Specialized Grooming';
+        parsed.topicIcon = 'sparkles';
+      }
+    } else {
+      // Clothing topic: attach instant bespoke visual
+      try {
+        const outfitVisual = generateOutfitVisualForAdvice(
+          prompt || parsed.top,
+          parsed,
+          gender,
+          stylePreference
+        );
+        parsed.customAiImageUrl = outfitVisual.imageUrl;
+        parsed.fallbackImageUrl = outfitVisual.fallbackUrl;
+        parsed.dynamicPrompt = outfitVisual.prompt;
+        parsed.customAiImageCaption = outfitVisual.caption;
+        parsed.isAiGenerated = false;
+      } catch (visErr: any) {
+        console.warn('Auto outfit visual generation warning:', visErr.message);
+      }
     }
 
     // Save to 5-minute memory cache
@@ -742,49 +811,54 @@ app.post('/api/agent/tts', async (req, res) => {
         ? 'A chic, cultured South Asian fashion stylist with natural Pakistani English and Roman Urdu accent, warm, fluent, and conversational cadence.'
         : 'A sophisticated, eloquent South Asian fashion stylist with a natural, melodious British-Pakistani accent, warm and articulate tone.';
 
-    try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash-lite-tts',
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                text: cleanText,
-                speechMetadata: {
-                  style: accentStyle,
+    const ttsModels = [MODELS_CONFIG.tts, ...MODELS_CONFIG.ttsFallback];
+    for (const ttsModel of ttsModels) {
+      try {
+        const response = await ai.models.generateContent({
+          model: ttsModel,
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  text: cleanText,
+                  speechMetadata: {
+                    style: accentStyle,
+                  },
                 },
+              ],
+            },
+          ],
+          config: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName },
               },
-            ],
-          },
-        ],
-        config: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName },
             },
           },
-        },
-      });
-
-      const audioPart = response.candidates?.[0]?.content?.parts?.[0];
-      const base64Data = audioPart?.inlineData?.data;
-
-      if (base64Data) {
-        return res.json({
-          audioUrl: `data:audio/wav;base64,${base64Data}`,
-          voiceName,
-          accent: 'Natural Pakistani Stylist',
-          success: true,
         });
+
+        const audioPart = response.candidates?.[0]?.content?.parts?.[0];
+        const base64Data = audioPart?.inlineData?.data;
+
+        if (base64Data) {
+          return res.json({
+            audioUrl: `data:audio/wav;base64,${base64Data}`,
+            voiceName,
+            modelUsed: ttsModel,
+            accent: 'Natural Pakistani Stylist',
+            success: true,
+          });
+        }
+      } catch (ttsErr: any) {
+        console.warn(`Gemini TTS model ${ttsModel} generation error:`, ttsErr.message);
       }
-    } catch (ttsErr: any) {
-      console.warn('Gemini TTS generation error, returning fallback:', ttsErr.message);
     }
 
-    return res.status(500).json({
+    return res.status(503).json({
       error: 'TTS model currently unavailable',
+      audioUrl: null,
       useFallback: true,
     });
   } catch (error: any) {
@@ -1257,67 +1331,85 @@ app.post('/api/agent/live-voice', async (req, res) => {
 Keep spoken responses punchy, engaging, warm, and natural (1-3 spoken sentences max).
 Target audience is gender "${gender}". Language: Spoken ${LANG_DESCRIPTIONS[language] || 'Roman Urdu'}.`;
 
-    // Generate spoken dialogue using gemini-3.8-live / conversational engine
+    // Generate spoken dialogue using MODELS_CONFIG.text
     let conversationalText = '';
-    try {
-      const chatContents = [
-        ...history.slice(-4).map((h: any) => ({
-          role: h.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: h.text }],
-        })),
-        { role: 'user', parts: [{ text: prompt }] },
-      ];
+    let usedTextModel: string = MODELS_CONFIG.text;
+    const textModels = [MODELS_CONFIG.text, ...MODELS_CONFIG.textFallback];
 
-      const textResp = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: chatContents,
-        config: { systemInstruction: systemPrompt },
-      });
-      conversationalText = textResp.text || 'Aap ka look ready hai, bohot shandar lagega!';
-    } catch (e: any) {
+    for (const tm of textModels) {
+      try {
+        const chatContents = [
+          ...history.slice(-4).map((h: any) => ({
+            role: h.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: h.text }],
+          })),
+          { role: 'user', parts: [{ text: prompt }] },
+        ];
+
+        const textResp = await ai.models.generateContent({
+          model: tm,
+          contents: chatContents,
+          config: { systemInstruction: systemPrompt },
+        });
+        if (textResp.text) {
+          conversationalText = textResp.text;
+          usedTextModel = tm;
+          break;
+        }
+      } catch (e: any) {
+        console.warn(`Live voice text generation model ${tm} failed:`, e.message);
+      }
+    }
+
+    if (!conversationalText) {
       conversationalText = 'Ji bilkul, aap ke liye yeh outfit perfect match rahega.';
     }
 
-    // Now generate speech audio with authentic Pakistani stylist cadence
+    // Now generate speech audio with valid free-tier TTS model & fallback
     let audioUrl: string | null = null;
-    try {
-      const ttsResp = await ai.models.generateContent({
-        model: 'gemini-3.8-flash-lite-tts',
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                text: conversationalText.slice(0, 300),
-                speechMetadata: {
-                  style: 'Conversational, cultured South Asian fashion stylist with natural Pakistani warmth and fluent intonation.',
+    const ttsModels = [MODELS_CONFIG.tts, ...MODELS_CONFIG.ttsFallback];
+
+    for (const ttsModel of ttsModels) {
+      try {
+        const ttsResp = await ai.models.generateContent({
+          model: ttsModel,
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  text: conversationalText.slice(0, 300),
+                  speechMetadata: {
+                    style: 'Conversational, cultured South Asian fashion stylist with natural Pakistani warmth and fluent intonation.',
+                  },
                 },
+              ],
+            },
+          ],
+          config: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName },
               },
-            ],
-          },
-        ],
-        config: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName },
             },
           },
-        },
-      });
+        });
 
-      const audioPart = ttsResp.candidates?.[0]?.content?.parts?.[0];
-      if (audioPart?.inlineData?.data) {
-        audioUrl = `data:audio/wav;base64,${audioPart.inlineData.data}`;
+        const audioPart = ttsResp.candidates?.[0]?.content?.parts?.[0];
+        if (audioPart?.inlineData?.data) {
+          audioUrl = `data:audio/wav;base64,${audioPart.inlineData.data}`;
+          break;
+        }
+      } catch (ttsErr: any) {
+        console.warn(`Live voice TTS synthesis with ${ttsModel} failed:`, ttsErr.message);
       }
-    } catch (ttsErr: any) {
-      console.warn('Live voice TTS synthesis failed:', ttsErr.message);
     }
 
     return res.json({
       transcript: conversationalText,
       audioUrl,
-      modelUsed: 'gemini-3.8-live-bridge',
+      modelUsed: usedTextModel,
       voiceName,
       success: true,
     });
