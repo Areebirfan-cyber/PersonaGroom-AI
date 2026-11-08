@@ -3,6 +3,8 @@ import {
   auth,
   googleProvider,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   firebaseSignOut,
@@ -77,16 +79,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState<boolean>(true);
   const [userProfile, setUserProfile] = useState<Partial<UserProfileRecord> | null>(null);
 
-  // Monitor Firebase Auth state
+  // Monitor Firebase Auth state + Handle Redirect Result + Safety Timeout
   useEffect(() => {
+    // 8-second safety timeout so user is NEVER stuck indefinitely on loading screen
+    const safetyTimer = setTimeout(() => {
+      setLoading(false);
+    }, 8000);
+
+    // Handle incoming redirect authentication if popup was blocked earlier
+    getRedirectResult(auth)
+      .then((cred) => {
+        if (cred?.user) {
+          console.log('[Auth] Google Redirect Sign-In completed for:', cred.user.email);
+        }
+      })
+      .catch((err) => {
+        console.warn('[Auth] Redirect result error (ignorable if no pending redirect):', err?.message);
+      });
+
     const unsubscribe = onAuthStateChanged(auth, async (fireUser) => {
+      clearTimeout(safetyTimer);
       setUser(fireUser);
       if (fireUser) {
         // If logged into Firebase, clear guest session
         setGuestUser(null);
         localStorage.removeItem(GUEST_STORAGE_KEY);
 
-        // Fetch or create profile
+        // Fetch or create profile (fail-safe: will not break auth if firestore offline)
         try {
           let profile = await fetchUserProfileFromFirestore(fireUser.uid);
           if (!profile) {
@@ -102,11 +121,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               theme: (localStorage.getItem('persona_theme') as Theme) || 'dark',
               updatedAt: new Date().toISOString(),
             };
-            await saveUserProfileToFirestore(fireUser.uid, profile);
+            try {
+              await saveUserProfileToFirestore(fireUser.uid, profile);
+            } catch (saveErr) {
+              console.warn('Profile firestore write skipped or offline:', saveErr);
+            }
           }
           setUserProfile(profile);
         } catch (err) {
-          console.warn('Profile bootstrap error:', err);
+          console.warn('Profile bootstrap error, setting default session profile:', err);
+          setUserProfile({
+            uid: fireUser.uid,
+            email: fireUser.email || 'user@personagroom.ai',
+            displayName: fireUser.displayName || 'Pakistani Fashion Connoisseur',
+            photoURL: fireUser.photoURL || undefined,
+            preferredGender: 'men',
+            ageGroup: 'pro',
+            stylePreference: 'traditional',
+            language: 'roman',
+            theme: 'dark',
+          });
         }
       } else {
         // If not a Firebase user, check if guest session exists
@@ -115,17 +149,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (savedGuest) {
             const parsed = JSON.parse(savedGuest);
             setGuestUser(parsed);
-            const localProf = await fetchUserProfileFromFirestore(parsed.uid);
-            setUserProfile(localProf || {
-              uid: parsed.uid,
-              email: parsed.email,
-              displayName: parsed.displayName,
-              preferredGender: 'men',
-              ageGroup: 'pro',
-              stylePreference: 'traditional',
-              language: 'roman',
-              theme: 'dark',
-            });
+            try {
+              const localProf = await fetchUserProfileFromFirestore(parsed.uid);
+              setUserProfile(localProf || {
+                uid: parsed.uid,
+                email: parsed.email,
+                displayName: parsed.displayName,
+                preferredGender: 'men',
+                ageGroup: 'pro',
+                stylePreference: 'traditional',
+                language: 'roman',
+                theme: 'dark',
+              });
+            } catch {
+              setUserProfile({
+                uid: parsed.uid,
+                email: parsed.email,
+                displayName: parsed.displayName,
+                preferredGender: 'men',
+                ageGroup: 'pro',
+                stylePreference: 'traditional',
+                language: 'roman',
+                theme: 'dark',
+              });
+            }
           } else {
             setUserProfile(null);
           }
@@ -136,14 +183,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoading(false);
     });
 
-    return () => unsubscribe();
+    return () => {
+      clearTimeout(safetyTimer);
+      unsubscribe();
+    };
   }, []);
 
   const signInWithGoogle = async () => {
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (error: any) {
-      console.error('Google Sign-In Error:', error);
+      console.warn('Google Popup Error, checking code:', error?.code);
+      if (error?.code === 'auth/popup-blocked') {
+        console.log('Popup blocked: falling back to redirect flow...');
+        await signInWithRedirect(auth, googleProvider);
+        return;
+      }
       throw error;
     }
   };

@@ -21,6 +21,35 @@ const ai = new GoogleGenAI({
   },
 });
 
+// Official active Free Tier Gemini Models (Consolidated in ONE config object)
+export const MODELS_CONFIG = {
+  text: 'gemini-3.1-flash-lite',
+  textFallback: ['gemini-flash-latest', 'gemini-2.5-flash'],
+  vision: 'gemini-3.1-flash-lite',
+  tts: 'gemini-3.8-flash-lite-tts',
+} as const;
+
+// Module-level success memory for models
+let lastSuccessfulTextModel: string = MODELS_CONFIG.text;
+
+// 20-second Gemini API call timeout wrapper
+function withTimeout<T>(promise: Promise<T>, ms = 20000): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`Gemini API call timed out after ${ms}ms`)), ms)
+    ),
+  ]);
+}
+
+// 5-minute in-memory cache for /api/agent/consult
+interface ConsultCacheEntry {
+  timestamp: number;
+  data: any;
+}
+const consultCache = new Map<string, ConsultCacheEntry>();
+const CONSULT_CACHE_TTL_MS = 5 * 60 * 1000;
+
 const AGE_LABELS: Record<string, string> = {
   teen: 'Teens (13–17 yrs)',
   uni: 'Young Adults (18–24 yrs)',
@@ -34,12 +63,13 @@ const LANG_DESCRIPTIONS: Record<string, string> = {
   ur: 'Urdu written in formal Nastaliq script (اردو رسم الخط)',
 };
 
-// Health & configuration check
+// Health & configuration check reporting active free models
 app.get('/api/health', (_req, res) => {
   res.json({
     status: 'online',
     hasApiKey: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.length > 5),
-    model: 'gemini-3.8-flash',
+    activeModel: lastSuccessfulTextModel,
+    modelsConfig: MODELS_CONFIG,
   });
 });
 
@@ -300,27 +330,54 @@ function sanitizeFashionImagePrompt(
   return `High quality fashion model wearing Pakistani ${garment} in ${color} ${fabricClause}, professional studio lighting, 8k resolution fashion photography`.replace(/\s+/g, ' ').trim();
 }
 
-// Helper to generate bespoke outfit visual matching exact user prompt and advice
-async function generateOutfitVisualForAdvice(
+// Helper to generate bespoke outfit visual matching exact user prompt and advice (Free, Instant, Guaranteed)
+function generateOutfitVisualForAdvice(
   userPrompt: string,
   advice: any,
   gender: string = 'men',
   stylePreference: string = 'traditional',
   ageGroup: string = 'uni'
-): Promise<{ imageUrl: string; fallbackUrl: string; caption: string; prompt: string; isAiGenerated: boolean }> {
+): { imageUrl: string; fallbackUrl: string; caption: string; prompt: string; isAiGenerated: boolean } {
   const combined = `${userPrompt || ''} ${advice?.intro || ''} ${advice?.top || ''} ${advice?.accessories || ''}`;
   const dynamicPrompt = sanitizeFashionImagePrompt(combined, gender, advice?.category);
-  const seed = Date.now();
-  const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(dynamicPrompt)}?width=800&height=500&nologo=true&seed=${seed}`;
-  const cleanCategoryKeywords = `${gender === 'women' ? 'women' : 'men'},${advice?.category || (gender === 'women' ? 'lehenga' : 'kurta')}`;
-  const fallbackUrl = `https://loremflickr.com/800/500/pakistani,fashion,${encodeURIComponent(cleanCategoryKeywords)}`;
+  const isFemale = gender === 'women';
+
+  // Reliable local fallback
+  let localFallback = isFemale ? '/assets/women_festive.jpg' : '/assets/men_festive.jpg';
+  if (advice?.category === 'casual') {
+    localFallback = isFemale ? '/assets/women_casual.jpg' : '/assets/men_casual.jpg';
+  } else if (advice?.category === 'jewelry' && isFemale) {
+    localFallback = '/assets/women_jewelry.jpg';
+  } else if (advice?.category === 'shoes') {
+    localFallback = '/assets/shoes_craft.jpg';
+  } else if (advice?.category === 'color') {
+    localFallback = '/assets/colors.jpg';
+  }
+
+  // Generate instant bespoke procedural SVG data URI
+  let svgDataUri = localFallback;
+  try {
+    const rawColors = advice?.colorHexes || (isFemale ? ['#881337', '#fbbf24', '#f8fafc'] : ['#0f766e', '#fbbf24', '#f8fafc']);
+    const rawSvg = generateBespokeOutfitSvg({
+      top: advice?.top || 'Bespoke Pakistani Kurta',
+      bottom: advice?.bottom || 'Tailored Trousers',
+      fabric: advice?.fabricRecommendation || 'Pure Raw Silk',
+      gender,
+      stylePreference,
+      colors: Array.isArray(rawColors) ? rawColors : ['#0f766e', '#fbbf24', '#f8fafc'],
+      userPrompt: userPrompt || advice?.top || 'Pakistani Cultural Ensemble',
+    });
+    svgDataUri = `data:image/svg+xml;utf8,${encodeURIComponent(rawSvg)}`;
+  } catch (err) {
+    console.warn('Procedural SVG generation notice:', err);
+  }
 
   return {
-    imageUrl: pollinationsUrl,
-    fallbackUrl,
-    caption: `Dynamic AI Visual · ${advice?.isSpecificAdvice ? (advice.specificTopic || 'Grooming & Style') : (advice?.top || 'Pakistani Couture').slice(0, 45)}`,
+    imageUrl: svgDataUri,
+    fallbackUrl: localFallback,
+    caption: `Style preview · ${advice?.isSpecificAdvice ? (advice.specificTopic || 'Grooming & Style') : (advice?.top || 'Pakistani Couture').slice(0, 45)}`,
     prompt: dynamicPrompt,
-    isAiGenerated: true,
+    isAiGenerated: false,
   };
 }
 
@@ -342,6 +399,13 @@ app.post('/api/agent/consult', async (req, res) => {
 
     if (!prompt && !image) {
       return res.status(400).json({ error: 'Prompt or image is required' });
+    }
+
+    // 5-minute memory cache lookup
+    const cacheKey = JSON.stringify({ prompt, gender, ageGroup, language, category, stylePreference, hasImage: Boolean(image) });
+    const cached = consultCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CONSULT_CACHE_TTL_MS) {
+      return res.json({ ...cached.data, fromCache: true });
     }
 
     const effectiveApiKey = apiKey || process.env.GEMINI_API_KEY || '';
@@ -460,63 +524,67 @@ Context Category: ${category}${historyBlock}`;
 
     parts.push({ text: userMessageContent });
 
-    const modelsToTry = ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
+    const modelsToTry = Array.from(new Set([lastSuccessfulTextModel, MODELS_CONFIG.text, ...MODELS_CONFIG.textFallback]));
     let lastError: any = null;
     let parsed: any = null;
 
     for (const modelName of modelsToTry) {
       try {
-        const response = await activeAi.models.generateContent({
-          model: modelName,
-          contents: { parts },
-          config: {
-            systemInstruction,
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                intro: { type: Type.STRING, description: 'Direct advice and concise answer to user prompt' },
-                isSpecificAdvice: { type: Type.BOOLEAN, description: 'True if user asked specifically about haircut, grooming, fragrance, etiquette, or shoes only' },
-                specificTopic: { type: Type.STRING, description: 'Short topic title if specific advice, else empty' },
-                styleTips: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: '2 short optional style tips (especially for non-clothing topics)',
+        const response = await withTimeout(
+          activeAi.models.generateContent({
+            model: modelName,
+            contents: { parts },
+            config: {
+              systemInstruction,
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  intro: { type: Type.STRING, description: 'Direct advice and concise answer to user prompt' },
+                  isSpecificAdvice: { type: Type.BOOLEAN, description: 'True if user asked specifically about haircut, grooming, fragrance, etiquette, or shoes only' },
+                  specificTopic: { type: Type.STRING, description: 'Short topic title if specific advice, else empty' },
+                  styleTips: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                    description: '2 short optional style tips (especially for non-clothing topics)',
+                  },
+                  top: { type: Type.STRING, description: 'Top wear specs for outfit looks; empty string if specific non-clothing topic' },
+                  bottom: { type: Type.STRING, description: 'Bottom wear specs for outfit looks; empty string if specific non-clothing topic' },
+                  footwear: { type: Type.STRING, description: 'Footwear recommendations' },
+                  accessories: { type: Type.STRING, description: 'Accessories / jewelry / fragrance recommendation' },
+                  color: { type: Type.STRING, description: 'Color contrast logic or grooming note' },
+                  colorHexes: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                    description: 'Array of 3 to 5 HEX color codes in #RRGGBB format',
+                  },
+                  fabricRecommendation: { type: Type.STRING, description: 'Fabric recommendation for clothing; empty string if specific non-clothing topic' },
+                  darziTip: { type: Type.STRING, description: 'Master darzi stitching cut for clothing; empty string if specific non-clothing topic' },
+                  estimatedBudgetPkr: { type: Type.STRING, description: 'Realistic price range in PKR' },
+                  marketLocations: { type: Type.STRING, description: 'Where to find these pieces in major Pakistani cities' },
+                  visualConceptImage: {
+                    type: Type.STRING,
+                    description: 'One of: men_festive, women_festive, women_jewelry, men_casual, women_casual, shoes_craft, colors, formal',
+                  },
+                  category: {
+                    type: Type.STRING,
+                    description: 'One of: festive, casual, color, budget, body, weather, shoes, grooming, jewelry',
+                  },
+                  followUpSuggestions: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                    description: '3 quick follow up suggestions the user can click to continue',
+                  },
                 },
-                top: { type: Type.STRING, description: 'Top wear specs for outfit looks; empty string if specific non-clothing topic' },
-                bottom: { type: Type.STRING, description: 'Bottom wear specs for outfit looks; empty string if specific non-clothing topic' },
-                footwear: { type: Type.STRING, description: 'Footwear recommendations' },
-                accessories: { type: Type.STRING, description: 'Accessories / jewelry / fragrance recommendation' },
-                color: { type: Type.STRING, description: 'Color contrast logic or grooming note' },
-                colorHexes: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: 'Array of 3 to 5 HEX color codes in #RRGGBB format',
-                },
-                fabricRecommendation: { type: Type.STRING, description: 'Fabric recommendation for clothing; empty string if specific non-clothing topic' },
-                darziTip: { type: Type.STRING, description: 'Master darzi stitching cut for clothing; empty string if specific non-clothing topic' },
-                estimatedBudgetPkr: { type: Type.STRING, description: 'Realistic price range in PKR' },
-                marketLocations: { type: Type.STRING, description: 'Where to find these pieces in major Pakistani cities' },
-                visualConceptImage: {
-                  type: Type.STRING,
-                  description: 'One of: men_festive, women_festive, women_jewelry, men_casual, women_casual, shoes_craft, colors, formal',
-                },
-                category: {
-                  type: Type.STRING,
-                  description: 'One of: festive, casual, color, budget, body, weather, shoes, grooming, jewelry',
-                },
-                followUpSuggestions: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: '3 quick follow up suggestions the user can click to continue',
-                },
+                required: ['intro', 'category', 'followUpSuggestions'],
               },
-              required: ['intro', 'category', 'followUpSuggestions'],
             },
-          },
-        });
+          }),
+          20000
+        );
 
         parsed = JSON.parse(response.text || '{}');
+        lastSuccessfulTextModel = modelName;
         break;
       } catch (err: any) {
         lastError = err;
@@ -528,24 +596,25 @@ Context Category: ${category}${historyBlock}`;
       throw lastError || new Error('All models exhausted');
     }
 
-    // Automatically attach exact outfit visual matching user requirement & prompt
+    // Attach instant bespoke visual (procedural SVG or local asset) immediately with zero latency
     try {
-      const outfitVisual = await generateOutfitVisualForAdvice(
+      const outfitVisual = generateOutfitVisualForAdvice(
         prompt || parsed.top,
         parsed,
         gender,
         stylePreference
       );
-      if (outfitVisual) {
-        parsed.customAiImageUrl = outfitVisual.imageUrl;
-        parsed.fallbackImageUrl = outfitVisual.fallbackUrl;
-        parsed.dynamicPrompt = outfitVisual.prompt;
-        parsed.customAiImageCaption = outfitVisual.caption;
-        parsed.isAiGenerated = outfitVisual.isAiGenerated;
-      }
+      parsed.customAiImageUrl = outfitVisual.imageUrl;
+      parsed.fallbackImageUrl = outfitVisual.fallbackUrl;
+      parsed.dynamicPrompt = outfitVisual.prompt;
+      parsed.customAiImageCaption = outfitVisual.caption;
+      parsed.isAiGenerated = false;
     } catch (visErr: any) {
       console.warn('Auto outfit visual generation warning:', visErr.message);
     }
+
+    // Save to 5-minute memory cache
+    consultCache.set(cacheKey, { timestamp: Date.now(), data: parsed });
 
     return res.json(parsed);
   } catch (error: any) {
@@ -566,15 +635,16 @@ app.post('/api/agent/color-palette', async (req, res) => {
       return res.status(503).json({ error: 'No API key', useFallback: true });
     }
 
-    const modelsToTry = ['gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'];
+    const modelsToTry = Array.from(new Set([lastSuccessfulTextModel, MODELS_CONFIG.text, ...MODELS_CONFIG.textFallback]));
     let lastError: any = null;
     let parsed: any = null;
 
     for (const modelName of modelsToTry) {
       try {
-        const response = await ai.models.generateContent({
-          model: modelName,
-          contents: `Perform professional South Asian Color Season & Undertone Analysis.
+        const response = await withTimeout(
+          ai.models.generateContent({
+            model: modelName,
+            contents: `Perform professional South Asian Color Season & Undertone Analysis.
 Skin Tone: ${skinTone}
 Vein Appearance: ${veinColor}
 Target Gender: ${gender}
@@ -587,47 +657,50 @@ Provide:
 5. Best Metal (Gold, Silver, Rose Gold, Antique Brass)
 6. Cultural Fabric Colors that make Pakistani skin glow
 7. Styling guidance in chosen language.`,
-          config: {
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                undertone: { type: Type.STRING },
-                season: { type: Type.STRING },
-                bestColors: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      name: { type: Type.STRING },
-                      hex: { type: Type.STRING },
-                      reason: { type: Type.STRING },
+            config: {
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  undertone: { type: Type.STRING },
+                  season: { type: Type.STRING },
+                  bestColors: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        name: { type: Type.STRING },
+                        hex: { type: Type.STRING },
+                        reason: { type: Type.STRING },
+                      },
+                      required: ['name', 'hex', 'reason'],
                     },
-                    required: ['name', 'hex', 'reason'],
                   },
-                },
-                avoidColors: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      name: { type: Type.STRING },
-                      hex: { type: Type.STRING },
-                      reason: { type: Type.STRING },
+                  avoidColors: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        name: { type: Type.STRING },
+                        hex: { type: Type.STRING },
+                        reason: { type: Type.STRING },
+                      },
+                      required: ['name', 'hex', 'reason'],
                     },
-                    required: ['name', 'hex', 'reason'],
                   },
+                  bestMetal: { type: Type.STRING },
+                  culturalInsight: { type: Type.STRING },
+                  summary: { type: Type.STRING },
                 },
-                bestMetal: { type: Type.STRING },
-                culturalInsight: { type: Type.STRING },
-                summary: { type: Type.STRING },
+                required: ['undertone', 'season', 'bestColors', 'avoidColors', 'bestMetal', 'culturalInsight', 'summary'],
               },
-              required: ['undertone', 'season', 'bestColors', 'avoidColors', 'bestMetal', 'culturalInsight', 'summary'],
             },
-          },
-        });
+          }),
+          20000
+        );
 
         parsed = JSON.parse(response.text || '{}');
+        lastSuccessfulTextModel = modelName;
         break;
       } catch (err: any) {
         lastError = err;
@@ -750,9 +823,9 @@ app.post('/api/agent/generate-outfit-image', async (req, res) => {
     const chosenGender = req.body?.gender || 'men';
     return res.json({
       imageUrl: fallbackMap[chosenGender] || '/assets/men_festive.jpg',
-      fallbackUrl: 'https://loremflickr.com/800/500/fashion,grooming/all',
+      fallbackUrl: fallbackMap[chosenGender] || '/assets/men_festive.jpg',
       prompt: 'Pakistani cultural outfit visual',
-      caption: 'Dynamic AI Visual · Pakistani Fashion Look',
+      caption: 'Style preview · Pakistani Fashion Look',
       isAiGenerated: false,
       useFallback: true,
       success: true,
@@ -876,19 +949,19 @@ app.post('/api/agent/chat', async (req, res) => {
 
     // Role-specific System Instructions
     let roleSystemInstruction = '';
-    let chosenModel = 'gemini-3.8-flash';
+    let chosenModel: string = MODELS_CONFIG.text;
     let enableSearch = false;
 
     if (role === 'architect') {
       // Complex tasks: Master Couture & Bespoke Architect
-      chosenModel = 'gemini-4-argon';
+      chosenModel = MODELS_CONFIG.text;
       roleSystemInstruction = `You are the Master Couture & Bespoke Architect at PersonaGroom AI.
 You specialize in intricate bespoke tailoring, bridal haute couture, heavy sherwanis with hand-embroidered tilla and zardozi, fabric density (GSM), master darzi cuts (kalidar, angrakha, double-breasted bandhgala), and structural fitting.
 Provide deep, authoritative, master-level guidance for gender "${gender}", age group "${ageGroup}", and aesthetic "${stylePreference}".
 Language: Respond in natural, sophisticated ${LANG_DESCRIPTIONS[language] || 'Roman Urdu'}.`;
     } else if (role === 'trends') {
       // General tasks with live search grounding: Real-Time Trend Specialist
-      chosenModel = 'gemini-3.8-flash';
+      chosenModel = 'gemini-flash-latest';
       enableSearch = true;
       roleSystemInstruction = `You are the Real-Time Trend Specialist at PersonaGroom AI.
 You have real-time access to live Google Search data to discover current 2026 fashion trends, designer collections (Khaadi, Sapphire, J., Bareeze, Maria.B, Deepak Perwani, Faraz Manan), current market prices in Pakistani bazaars (Liberty, Zainab Market, Raja Bazaar), and upcoming wedding season styles.
@@ -896,7 +969,7 @@ Always provide fresh, trend-forward, culturally authentic advice for gender "${g
 Language: Respond in ${LANG_DESCRIPTIONS[language] || 'Roman Urdu'}.`;
     } else {
       // Fast lightweight tasks: Quick Style Dispatcher
-      chosenModel = 'gemini-3.1-flash-lite';
+      chosenModel = MODELS_CONFIG.text;
       roleSystemInstruction = `You are the Quick Style Dispatcher at PersonaGroom AI.
 Provide lightning-fast, concise, punchy styling advice, color contrast pairings, shoe recommendations, and immediate wardrobe solutions for gender "${gender}", style "${stylePreference}".
 Language: Respond in ${LANG_DESCRIPTIONS[language] || 'Roman Urdu'}.`;
@@ -919,8 +992,8 @@ Language: Respond in ${LANG_DESCRIPTIONS[language] || 'Roman Urdu'}.`;
     let response: any = null;
     let actualModel = chosenModel;
 
-    // Model fallback cascade if primary model is unavailable or requires paid key
-    const fallbackList = [chosenModel, 'gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
+    // Model fallback cascade using valid active free-tier models
+    const fallbackList = Array.from(new Set([lastSuccessfulTextModel, chosenModel, MODELS_CONFIG.text, ...MODELS_CONFIG.textFallback]));
     const tried = new Set<string>();
 
     for (const modelToTry of fallbackList) {
@@ -928,17 +1001,21 @@ Language: Respond in ${LANG_DESCRIPTIONS[language] || 'Roman Urdu'}.`;
       tried.add(modelToTry);
       try {
         const activeConfig = { ...config };
-        // Google Search is supported on gemini-3.8-flash and gemini-flash-latest
-        if (enableSearch && modelToTry !== 'gemini-3.8-flash' && modelToTry !== 'gemini-flash-latest') {
+        // Google Search is supported on gemini-flash-latest
+        if (enableSearch && modelToTry !== 'gemini-flash-latest') {
           delete activeConfig.tools;
         }
 
-        response = await ai.models.generateContent({
-          model: modelToTry,
-          contents,
-          config: activeConfig,
-        });
+        response = await withTimeout(
+          ai.models.generateContent({
+            model: modelToTry,
+            contents,
+            config: activeConfig,
+          }),
+          20000
+        );
         actualModel = modelToTry;
+        lastSuccessfulTextModel = modelToTry;
         break;
       } catch (err: any) {
         console.warn(`Chat model ${modelToTry} attempt failed:`, err.message);
@@ -980,9 +1057,9 @@ Language: Respond in ${LANG_DESCRIPTIONS[language] || 'Roman Urdu'}.`;
 });
 
 // -------------------------------------------------------------
-// 2. Text-Prompt Create & Edit Images (gemini-nano-banana-2.1)
+// 2. Free-Only Style Preview Studio & Procedural Outfit Generator
 // -------------------------------------------------------------
-app.post('/api/agent/image-studio', async (req, res) => {
+app.post('/api/agent/image-studio', (req, res) => {
   const fallbackMap: Record<string, string> = {
     men: '/assets/men_festive.jpg',
     women: '/assets/women_festive.jpg',
@@ -1009,107 +1086,147 @@ app.post('/api/agent/image-studio', async (req, res) => {
       stylePreference
     );
 
-    if (!process.env.GEMINI_API_KEY) {
-      const dynamicAiUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(sanitizedPrompt)}?width=1024&height=1024&nologo=true&seed=${Date.now()}`;
+    const isFemale = gender === 'women';
+    const localAsset = isFemale ? '/assets/women_festive.jpg' : '/assets/men_festive.jpg';
+
+    // Procedural Bespoke SVG Generation
+    let svgDataUri = localAsset;
+    try {
+      const colors = isFemale ? ['#881337', '#fbbf24', '#f8fafc'] : ['#0f766e', '#fbbf24', '#f8fafc'];
+      const rawSvg = generateBespokeOutfitSvg({
+        top: isFemale ? 'Embroidered Kalidar Kurti' : 'Bespoke Royal Sherwani',
+        bottom: isFemale ? 'Flared Sharara / Lehenga' : 'Tailored Slim Trousers',
+        fabric: 'Pure Raw Silk with Tilla Weave',
+        gender,
+        stylePreference,
+        colors,
+        userPrompt: prompt || editInstruction || 'Pakistani Haute Couture',
+      });
+      svgDataUri = `data:image/svg+xml;utf8,${encodeURIComponent(rawSvg)}`;
+    } catch (err) {
+      console.warn('SVG generation error:', err);
+    }
+
+    if (isEdit) {
       return res.json({
-        imageUrl: dynamicAiUrl,
-        fallbackUrl: fallbackMap[gender] || '/assets/men_festive.jpg',
+        imageUrl: svgDataUri,
+        fallbackUrl: localAsset,
         prompt: sanitizedPrompt,
-        modelUsed: 'pollinations-studio-engine',
-        isEdited: isEdit,
-        useFallback: true,
+        modelUsed: 'procedural-bespoke-studio',
+        isEdited: false,
+        message: 'Image editing via paid AI models is disabled in Free Tier. Showing bespoke style preview instead.',
         success: true,
       });
     }
-
-    const fullPrompt = isEdit
-      ? `Edit this Pakistani fashion image: ${editInstruction}. Maintain the high-fashion editorial Pakistani aesthetic, authentic fabric weaves, intricate embroidery, and realistic cultural details.`
-      : `High-fashion Pakistani ${gender} ${stylePreference} outfit: ${prompt}. Editorial photography, 8k resolution, photorealistic studio lighting, authentic embroidery, regal color contrast, Pakistani cultural couture catalog style.`;
-
-    const parts: any[] = [];
-    if (base64Image && typeof base64Image === 'string') {
-      const match = base64Image.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
-      if (match) {
-        parts.push({
-          inlineData: {
-            mimeType: match[1],
-            data: match[2],
-          },
-        });
-      }
-    }
-    parts.push({ text: fullPrompt });
-
-    // Primary requested model is gemini-nano-banana-2.1 with graceful fallback cascade
-    const imageModels = ['gemini-nano-banana-2.1', 'gemini-3.1-flash-lite-image'];
-    let generatedImageData: string | null = null;
-    let usedModel = 'gemini-nano-banana-2.1';
-
-    for (const modelName of imageModels) {
-      try {
-        const response = await ai.models.generateContent({
-          model: modelName,
-          contents: { parts },
-        });
-
-        for (const part of response.candidates?.[0]?.content?.parts ?? []) {
-          if (part.inlineData?.data) {
-            const mime = part.inlineData.mimeType || 'image/png';
-            generatedImageData = `data:${mime};base64,${part.inlineData.data}`;
-            usedModel = modelName;
-            break;
-          }
-        }
-        if (generatedImageData) break;
-      } catch (err: any) {
-        const isQuota =
-          err?.status === 429 ||
-          err?.message?.includes('429') ||
-          err?.message?.includes('RESOURCE_EXHAUSTED') ||
-          err?.message?.includes('quota');
-        if (isQuota) {
-          console.log(`[Image Studio] Model ${modelName} quota limit reached on Free Tier. Seamlessly activating high-fidelity studio engine fallback.`);
-          break; // Stop cascade to prevent hitting another rate-limited Gemini model
-        } else {
-          console.warn(`[Image Studio] Model ${modelName} unavailable, falling back:`, err?.status || err?.message?.slice(0, 80));
-        }
-      }
-    }
-
-    if (generatedImageData) {
-      return res.json({
-        imageUrl: generatedImageData,
-        prompt: fullPrompt,
-        modelUsed: usedModel,
-        isEdited: isEdit,
-        success: true,
-      });
-    }
-
-    // Dynamic high-resolution visual generator fallback (Pollinations AI + sanitized fashion keywords)
-    const dynamicAiUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(sanitizedPrompt)}?width=1024&height=1024&nologo=true&seed=${Date.now()}`;
 
     return res.json({
-      imageUrl: dynamicAiUrl,
-      fallbackUrl: fallbackMap[gender] || '/assets/men_festive.jpg',
+      imageUrl: svgDataUri,
+      fallbackUrl: localAsset,
       prompt: sanitizedPrompt,
-      modelUsed: 'pollinations-studio-engine',
-      isEdited: isEdit,
-      useFallback: true,
+      modelUsed: 'procedural-bespoke-studio',
+      isEdited: false,
+      message: 'Style preview generated via PersonaGroom Bespoke Studio.',
       success: true,
-      message: 'Visual generated via PersonaGroom Studio High-Fidelity Engine.',
     });
   } catch (error: any) {
-    console.error('Image Studio fallback activated:', error?.message?.slice(0, 80) || error);
-    const fallbackUrl = fallbackMap[req.body?.gender || 'men'] || '/assets/men_festive.jpg';
+    console.error('Image Studio error:', error);
+    const localAsset = req.body?.gender === 'women' ? '/assets/women_festive.jpg' : '/assets/men_festive.jpg';
     return res.json({
-      imageUrl: 'https://loremflickr.com/800/500/fashion,clothing/all',
-      fallbackUrl,
+      imageUrl: localAsset,
+      fallbackUrl: localAsset,
       prompt: 'Pakistani couture attire',
-      modelUsed: 'emergency-studio-fallback',
+      modelUsed: 'local-asset-fallback',
       isEdited: false,
       useFallback: true,
       success: true,
+    });
+  }
+});
+
+// -------------------------------------------------------------
+// Vision Model: Analyze Uploaded Outfit Photo (Free Tier: gemini-3.1-flash-lite)
+// -------------------------------------------------------------
+app.post('/api/agent/analyze-outfit-photo', async (req, res) => {
+  try {
+    const { base64Image, gender = 'unisex' } = req.body;
+    if (!base64Image || typeof base64Image !== 'string') {
+      return res.status(400).json({ error: 'base64Image is required' });
+    }
+
+    if (!process.env.GEMINI_API_KEY) {
+      return res.json({
+        success: true,
+        upperGarmentType: gender === 'women' ? 'anarkali' : 'sherwani',
+        upperColorHex: '#0f766e',
+        lowerGarmentType: gender === 'women' ? 'sharara' : 'trousers',
+        lowerColorHex: '#f8fafc',
+        trimColorHex: '#d4af37',
+        hasGoldTrim: true,
+        description: 'Pakistani classic ensemble with rich jewel tones and tilla accents',
+      });
+    }
+
+    const match = base64Image.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
+    const mimeType = match ? match[1] : 'image/jpeg';
+    const data = match ? match[2] : base64Image;
+
+    const response = await withTimeout(
+      ai.models.generateContent({
+        model: MODELS_CONFIG.vision,
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { inlineData: { mimeType, data } },
+              {
+                text: `Analyze this Pakistani outfit photo. Extract:
+1. upperGarmentType (strictly one of: sherwani, prince_coat, kurta, waistcoat, anarkali, saree, kurti)
+2. upperColorHex (prominent hex code of the top garment, e.g. #1e3a8a)
+3. lowerGarmentType (strictly one of: shalwar, trousers, churidar, sharara, lehenga, pajama)
+4. lowerColorHex (prominent hex code of the bottom garment, e.g. #f8fafc)
+5. trimColorHex (embroidery/trim/accent hex, e.g. #d4af37)
+6. hasGoldTrim (boolean)
+7. description (brief 1-sentence cultural description)
+Return JSON only.`,
+              },
+            ],
+          },
+        ],
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              upperGarmentType: { type: Type.STRING },
+              upperColorHex: { type: Type.STRING },
+              lowerGarmentType: { type: Type.STRING },
+              lowerColorHex: { type: Type.STRING },
+              trimColorHex: { type: Type.STRING },
+              hasGoldTrim: { type: Type.BOOLEAN },
+              description: { type: Type.STRING },
+            },
+            required: ['upperGarmentType', 'upperColorHex', 'lowerGarmentType', 'lowerColorHex'],
+          },
+        },
+      }),
+      20000
+    );
+
+    const parsed = JSON.parse(response.text || '{}');
+    return res.json({ success: true, ...parsed });
+  } catch (err: any) {
+    console.warn('Vision analysis fallback activated:', err?.message);
+    const isFemale = req.body?.gender === 'women';
+    return res.json({
+      success: true,
+      upperGarmentType: isFemale ? 'anarkali' : 'sherwani',
+      upperColorHex: isFemale ? '#881337' : '#0f766e',
+      lowerGarmentType: isFemale ? 'sharara' : 'trousers',
+      lowerColorHex: '#f8fafc',
+      trimColorHex: '#d4af37',
+      hasGoldTrim: true,
+      description: 'Handcrafted Pakistani ensemble with authentic silhouette and gold accents',
+      fallbackUsed: true,
     });
   }
 });

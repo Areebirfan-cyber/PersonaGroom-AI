@@ -55,17 +55,26 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
   const controlsRef = useRef<OrbitControls | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
-  const photoMeshRef = useRef<THREE.Mesh | null>(null);
-  const photoStandGroupRef = useRef<THREE.Group | null>(null);
   const { currentUser } = useAuth();
 
+  const [webGlError, setWebGlError] = useState<string | null>(null);
   const [isControlsCollapsed, setIsControlsCollapsed] = useState(false);
   const [activeAnglePreset, setActiveAnglePreset] = useState<'front' | 'side' | 'back'>('front');
   const [selectedPalette, setSelectedPalette] = useState<string>(activeColorHex);
+  const [upperColor, setUpperColor] = useState<string>(activeColorHex);
+  const [lowerColor, setLowerColor] = useState<string>('#f8fafc');
+  const [garmentSilhouette, setGarmentSilhouette] = useState<'sherwani' | 'kurta' | 'anarkali' | 'prince-coat' | 'waistcoat'>('sherwani');
   const [fabricFinish, setFabricFinish] = useState<'raw-silk' | 'velvet' | 'brocade'>('raw-silk');
   const [isTurntableActive, setIsTurntableActive] = useState<boolean>(true);
+  const [usePhotoTexture, setUsePhotoTexture] = useState<boolean>(true);
 
-  // Custom Outfit Photo Upload & 360 Viewer State
+  // Turntable ref to permanently prevent stale closure inside requestAnimationFrame
+  const isTurntableActiveRef = useRef<boolean>(isTurntableActive);
+  useEffect(() => {
+    isTurntableActiveRef.current = isTurntableActive;
+  }, [isTurntableActive]);
+
+  // Custom Outfit Photo Upload State
   const [uploadedPhotoUrl, setUploadedPhotoUrl] = useState<string | null>(() => {
     try {
       return localStorage.getItem(`pg_3d_uploaded_photo_${currentUser?.uid || 'guest'}`);
@@ -73,7 +82,6 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
       return null;
     }
   });
-  const [viewDisplayMode, setViewDisplayMode] = useState<'mannequin' | 'photoStand' | 'both'>('mannequin');
 
   // Custom prompt dress studio state
   const [customPrompt, setCustomPrompt] = useState<string>('');
@@ -82,12 +90,12 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
   // Dynamic bottom spec card details
   const [outfitSpec, setOutfitSpec] = useState<OutfitSpec>({
     lookName: lookTitle,
-    fabricTexture: '100% Pure Raw Silk with high tensile handloom sheen',
+    fabricTexture: '100% Pure Raw Silk with authentic Pakistani fabric drape (Roughness: 0.7)',
     silhouetteFit: gender === 'women' ? 'Flared Anarkali Silhouette with Tapered Waist' : 'Structured Slim-Fit Sherwani Cut with Crisp Chest Pad',
     colorSwatches: [
       { name: 'Primary Regal', hex: activeColorHex },
       { name: 'Antique Gold Tilla', hex: '#d4af37' },
-      { name: 'Ivory Latha Trim', hex: '#f8fafc' },
+      { name: 'Trousers Ivory', hex: '#f8fafc' },
       { name: 'Midnight Accent', hex: '#0f172a' },
     ],
     tailoringGuidelines: '1.25-inch Mandarin Ban collar, concealed inner placket, knife-pleat flare and contrast silk lining.',
@@ -97,14 +105,35 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
   const sceneElementsRef = useRef<{
     mannequinGroup: THREE.Group | null;
     garmentMaterials: THREE.MeshPhysicalMaterial[];
+    trouserMaterial: THREE.MeshStandardMaterial | null;
     buttonMaterials: THREE.MeshStandardMaterial[];
     goldTrimMaterials: THREE.MeshStandardMaterial[];
+    torsoMesh: THREE.Mesh | null;
+    flareMesh: THREE.Mesh | null;
   }>({
     mannequinGroup: null,
     garmentMaterials: [],
+    trouserMaterial: null,
     buttonMaterials: [],
     goldTrimMaterials: [],
+    torsoMesh: null,
+    flareMesh: null,
   });
+
+  // Helper to extract hex color from descriptive keywords
+  const extractColorHex = (text: string, defaultHex: string): { hex: string; name: string } => {
+    const t = text.toLowerCase();
+    if (t.includes('blue') || t.includes('navy') || t.includes('neela')) return { hex: '#1e3a8a', name: 'Royal Midnight Blue' };
+    if (t.includes('emerald') || t.includes('green') || t.includes('sabz')) return { hex: '#064e3b', name: 'Mughal Emerald Green' };
+    if (t.includes('red') || t.includes('maroon') || t.includes('ruby') || t.includes('crimson')) return { hex: '#881337', name: 'Royal Ruby Maroon' };
+    if (t.includes('black') || t.includes('jet') || t.includes('siah')) return { hex: '#09090b', name: 'Jet Black Boski' };
+    if (t.includes('gold') || t.includes('mustard') || t.includes('amber') || t.includes('sunheri')) return { hex: '#b45309', name: 'Raw Amber Gold' };
+    if (t.includes('white') || t.includes('ivory') || t.includes('offwhite') || t.includes('safed') || t.includes('latha')) return { hex: '#f8fafc', name: 'Ivory Cotton Latha' };
+    if (t.includes('pink') || t.includes('blush') || t.includes('rose') || t.includes('gulabi')) return { hex: '#be185d', name: 'Gulabi Rose Petal' };
+    if (t.includes('olive') || t.includes('mehendi')) return { hex: '#15803d', name: 'Olive Mehendi' };
+    if (t.includes('plum') || t.includes('purple')) return { hex: '#3b0764', name: 'Royal Imperial Plum' };
+    return { hex: defaultHex, name: 'Bespoke Palette' };
+  };
 
   // Handle parsing custom dress prompt
   const handleRenderCustomLook = (e?: React.FormEvent) => {
@@ -115,30 +144,38 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
 
     setIsRenderingLook(true);
 
-    // Color detection
-    let detectedHex = selectedPalette;
-    let colorName = 'Bespoke Hue';
-    if (prompt.includes('royal blue') || prompt.includes('navy') || prompt.includes('blue')) {
-      detectedHex = '#1e3a8a';
-      colorName = 'Royal Midnight Blue';
-    } else if (prompt.includes('emerald') || prompt.includes('green') || prompt.includes('sabz')) {
-      detectedHex = '#064e3b';
-      colorName = 'Mughal Emerald Green';
-    } else if (prompt.includes('red') || prompt.includes('maroon') || prompt.includes('ruby') || prompt.includes('crimson')) {
-      detectedHex = '#881337';
-      colorName = 'Royal Ruby Velvet';
-    } else if (prompt.includes('black') || prompt.includes('jet') || prompt.includes('siah')) {
-      detectedHex = '#09090b';
-      colorName = 'Jet Black Boski';
-    } else if (prompt.includes('gold') || prompt.includes('mustard') || prompt.includes('amber')) {
-      detectedHex = '#b45309';
-      colorName = 'Raw Amber Tilla';
-    } else if (prompt.includes('white') || prompt.includes('ivory') || prompt.includes('offwhite') || prompt.includes('latha')) {
-      detectedHex = '#f8fafc';
-      colorName = 'Ivory Cotton Latha';
-    } else if (prompt.includes('pink') || prompt.includes('blush') || prompt.includes('rose')) {
-      detectedHex = '#be185d';
-      colorName = 'Gulabi Rose Petal';
+    // Two-part color parsing: "pant white and coat blue" / "trouser black and sherwani maroon"
+    let detectedUpper = upperColor;
+    let detectedLower = lowerColor;
+
+    // Check bottom garment color
+    const pantMatch = prompt.match(/(?:pant|trouser|shalwar|pajama|sharara|bottom)\s+(?:is\s+)?([a-z]+)/);
+    if (pantMatch) {
+      detectedLower = extractColorHex(pantMatch[1], detectedLower).hex;
+    }
+
+    // Check top garment color
+    const topMatch = prompt.match(/(?:coat|kurta|sherwani|jacket|top|shirt|choli)\s+(?:is\s+)?([a-z]+)/);
+    if (topMatch) {
+      detectedUpper = extractColorHex(topMatch[1], detectedUpper).hex;
+    } else {
+      // General color detection
+      const genColor = extractColorHex(prompt, selectedPalette);
+      detectedUpper = genColor.hex;
+    }
+
+    // Silhouette detection
+    let detectedSilhouette = garmentSilhouette;
+    if (prompt.includes('anarkali') || (gender === 'women' && (prompt.includes('gown') || prompt.includes('kalidar') || prompt.includes('lehenga')))) {
+      detectedSilhouette = 'anarkali';
+    } else if (prompt.includes('kurta') || prompt.includes('kurti')) {
+      detectedSilhouette = 'kurta';
+    } else if (prompt.includes('sherwani')) {
+      detectedSilhouette = 'sherwani';
+    } else if (prompt.includes('prince coat') || prompt.includes('prince')) {
+      detectedSilhouette = 'prince-coat';
+    } else if (prompt.includes('waistcoat')) {
+      detectedSilhouette = 'waistcoat';
     }
 
     // Fabric detection
@@ -152,30 +189,34 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
       fabricText = 'Authentic Banarsi Brocade woven with metallic gold zari motifs';
     } else if (prompt.includes('silk') || prompt.includes('raw silk') || prompt.includes('boski')) {
       detectedFinish = 'raw-silk';
-      fabricText = 'Pure 80g Raw Silk with subtle tactile slub texture';
+      fabricText = 'Pure 80g Raw Silk with subtle tactile slub texture (Roughness: 0.7)';
     }
 
-    // Apply updates
     setTimeout(() => {
-      setSelectedPalette(detectedHex);
+      setSelectedPalette(detectedUpper);
+      setUpperColor(detectedUpper);
+      setLowerColor(detectedLower);
+      setGarmentSilhouette(detectedSilhouette);
       setFabricFinish(detectedFinish);
-      const newSpec = {
+
+      const newSpec: OutfitSpec = {
         lookName: cleanPrompt.slice(0, 42) || 'Custom 3D Look',
         fabricTexture: fabricText,
-        silhouetteFit: prompt.includes('kurta')
-          ? 'Straight-Cut Festive Kurta with 38-inch Daman'
-          : prompt.includes('anarkali') || prompt.includes('gown')
-          ? 'Full-Flared 16-Kali Kalidar Ensemble with Gota Patti'
-          : prompt.includes('sherwani')
-          ? 'Structured Aristocratic Sherwani with Shoulder Epaulets'
-          : gender === 'women'
-          ? 'Tailored Zanana Kurti with Organza Duppata Drape'
-          : 'Classic Mardana Sherwani with Knife-Pleat Shalwar',
+        silhouetteFit:
+          detectedSilhouette === 'anarkali'
+            ? 'Full-Flared 16-Kali Kalidar Anarkali with Flowing Hem'
+            : detectedSilhouette === 'kurta'
+            ? 'Straight-Cut Authentic Kurta with 38-inch Knee Daman'
+            : detectedSilhouette === 'prince-coat'
+            ? 'Structured Double-Breasted Prince Coat with Mandarin Collar'
+            : detectedSilhouette === 'waistcoat'
+            ? 'Bespoke Tailored Waistcoat with Brass Buttons'
+            : 'Structured Aristocratic Sherwani with Shoulder Epaulets',
         colorSwatches: [
-          { name: colorName, hex: detectedHex },
-          { name: 'Antique Gold Tilla', hex: '#d4af37' },
-          { name: 'Accent Trim', hex: '#e2e8f0' },
-          { name: 'Shadow Depth', hex: '#020617' },
+          { name: 'Top Garment', hex: detectedUpper },
+          { name: 'Bottom Wear', hex: detectedLower },
+          { name: 'Antique Gold Trim', hex: '#d4af37' },
+          { name: 'Accent Depth', hex: '#020617' },
         ],
         tailoringGuidelines: `Master Darzi cut: ${
           detectedFinish === 'velvet'
@@ -194,32 +235,65 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
           type: 'runway_look',
           title: newSpec.lookName,
           data: {
-            palette: detectedHex,
+            palette: detectedUpper,
+            upperColor: detectedUpper,
+            lowerColor: detectedLower,
+            silhouette: detectedSilhouette,
             finish: detectedFinish,
             spec: newSpec,
           },
           createdAt: new Date().toISOString(),
         });
       }
-    }, 400);
+    }, 300);
   };
 
-  // Custom Outfit Photo Upload Handlers
+  // Custom Outfit Photo Upload Handlers + Background Vision Analysis
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       const dataUrl = String(reader.result);
       setUploadedPhotoUrl(dataUrl);
-      setViewDisplayMode('both');
+      setUsePhotoTexture(true);
       try {
         localStorage.setItem(`pg_3d_uploaded_photo_${currentUser?.uid || 'guest'}`, dataUrl);
       } catch {}
+
+      // Background vision analysis to detect garment type & colors
+      try {
+        const resp = await fetch('/api/agent/analyze-outfit-photo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ base64Image: dataUrl, gender }),
+        });
+        if (resp.ok) {
+          const analysis = await resp.json();
+          if (analysis.upperColorHex) {
+            setUpperColor(analysis.upperColorHex);
+            setSelectedPalette(analysis.upperColorHex);
+          }
+          if (analysis.lowerColorHex) {
+            setLowerColor(analysis.lowerColorHex);
+          }
+          if (analysis.upperGarmentType) {
+            const g = analysis.upperGarmentType.toLowerCase();
+            if (g.includes('anarkali') || g.includes('saree') || g.includes('kurti')) setGarmentSilhouette('anarkali');
+            else if (g.includes('kurta')) setGarmentSilhouette('kurta');
+            else if (g.includes('prince')) setGarmentSilhouette('prince-coat');
+            else if (g.includes('waistcoat')) setGarmentSilhouette('waistcoat');
+            else setGarmentSilhouette('sherwani');
+          }
+        }
+      } catch (visErr) {
+        console.warn('Photo vision analysis skipped:', visErr);
+      }
+
       setOutfitSpec((prev) => ({
         ...prev,
-        lookName: 'Custom Outfit 3D Studio',
-        fabricTexture: 'User Uploaded Outfit Photo mapped onto 3D Studio perspective canvas',
+        lookName: 'Custom Outfit 3D Draping',
+        fabricTexture: 'User Uploaded Outfit Photo mapped directly onto 3D Mannequin Torso & Flare',
       }));
     };
     reader.readAsDataURL(file);
@@ -228,10 +302,20 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
 
   const handleRemovePhoto = () => {
     setUploadedPhotoUrl(null);
-    setViewDisplayMode('mannequin');
+    setUsePhotoTexture(false);
     try {
       localStorage.removeItem(`pg_3d_uploaded_photo_${currentUser?.uid || 'guest'}`);
     } catch {}
+  };
+
+  const handleResetLook = () => {
+    setSelectedPalette(activeColorHex);
+    setUpperColor(activeColorHex);
+    setLowerColor('#f8fafc');
+    setFabricFinish('raw-silk');
+    setGarmentSilhouette(gender === 'women' ? 'anarkali' : 'sherwani');
+    setCustomPrompt('');
+    handleResetCamera();
   };
 
   // Preset angle switcher
@@ -306,8 +390,8 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
     if (!isOpen || !mountRef.current) return;
 
     const container = mountRef.current;
-    const width = container.clientWidth;
-    const height = container.clientHeight;
+    const width = Math.max(container.clientWidth || window.innerWidth, 300);
+    const height = Math.max(container.clientHeight || window.innerHeight, 300);
 
     // Detect software WebGL safely
     const isSoftwareGl = (() => {
@@ -324,19 +408,26 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
       }
     })();
 
-    // 1. Studio WebGL Renderer with ACES Filmic Tone Mapping
-    const renderer = new THREE.WebGLRenderer({
-      antialias: !isSoftwareGl,
-      powerPreference: 'high-performance',
-      alpha: false,
-    });
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({
+        antialias: !isSoftwareGl,
+        powerPreference: 'high-performance',
+        alpha: false,
+      });
+    } catch (err: any) {
+      console.error('WebGL Renderer init error:', err);
+      setWebGlError('WebGL is not supported or was blocked by your browser/GPU.');
+      return;
+    }
+
     renderer.setSize(width, height);
     renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.18;
     renderer.shadowMap.enabled = !isSoftwareGl;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
 
     container.appendChild(renderer.domElement);
 
@@ -386,26 +477,25 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
     controls.maxDistance = 6.0;
     controlsRef.current = controls;
 
-    // 6. Pedestal & Contact Shadow
+    // 6. Pedestal & Grounding Contact Shadow
     const pedestalGeo = new THREE.CylinderGeometry(1.6, 1.7, 0.08, 48);
     const pedestalMat = new THREE.MeshStandardMaterial({
       color: 0x0f172a,
-      roughness: 0.25,
-      metalness: 0.7,
+      roughness: 0.3,
+      metalness: 0.6,
     });
     const pedestal = new THREE.Mesh(pedestalGeo, pedestalMat);
     pedestal.position.y = 0.04;
     pedestal.receiveShadow = !isSoftwareGl;
     scene.add(pedestal);
 
-    // Radial shadow plane
     const shadowCanvas = document.createElement('canvas');
     shadowCanvas.width = 256;
     shadowCanvas.height = 256;
     const ctx = shadowCanvas.getContext('2d');
     if (ctx) {
       const grad = ctx.createRadialGradient(128, 128, 10, 128, 128, 120);
-      grad.addColorStop(0, 'rgba(0, 0, 0, 0.8)');
+      grad.addColorStop(0, 'rgba(0, 0, 0, 0.85)');
       grad.addColorStop(0.5, 'rgba(0, 0, 0, 0.35)');
       grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
       ctx.fillStyle = grad;
@@ -445,39 +535,75 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
     standPole.position.y = 0.44;
     mannequinGroup.add(standPole);
 
-    // Garment Material
-    const initialColor = new THREE.Color(selectedPalette);
+    // Garment Materials: authentic fabric roughness 0.7, metalness 0
     const garmentMat = new THREE.MeshPhysicalMaterial({
-      color: initialColor,
-      roughness: 0.55,
-      metalness: 0.15,
-      clearcoat: 0.25,
-      clearcoatRoughness: 0.4,
-      sheen: 0.85,
+      color: new THREE.Color(upperColor),
+      roughness: 0.7,
+      metalness: 0.0,
+      clearcoat: 0.1,
+      clearcoatRoughness: 0.5,
+      sheen: 0.6,
       sheenColor: new THREE.Color(0xfff1f2),
     });
 
     const trouserMat = new THREE.MeshStandardMaterial({
-      color: 0xf8fafc,
+      color: new THREE.Color(lowerColor),
       roughness: 0.75,
-      metalness: 0.05,
+      metalness: 0.0,
     });
 
-    // Torso
+    const tillaGoldMat = new THREE.MeshStandardMaterial({
+      color: 0xfbbf24,
+      roughness: 0.18,
+      metalness: 0.88,
+    });
+
+    // Torso (Upper Garment)
     const torsoGeo = new THREE.CylinderGeometry(0.24, 0.21, 0.65, 32);
     const torso = new THREE.Mesh(torsoGeo, garmentMat);
     torso.position.y = 1.25;
     torso.castShadow = !isSoftwareGl;
     mannequinGroup.add(torso);
 
-    // Flared Ghera
-    const flareGeo = new THREE.CylinderGeometry(0.21, 0.36, 0.62, 32);
+    // Two Symmetric Sleeves angled naturally downward
+    const sleeveGeo = new THREE.CylinderGeometry(0.065, 0.055, 0.58, 20);
+    const leftSleeve = new THREE.Mesh(sleeveGeo, garmentMat);
+    leftSleeve.position.set(-0.31, 1.25, 0);
+    leftSleeve.rotation.z = Math.PI / 12;
+    leftSleeve.castShadow = !isSoftwareGl;
+    mannequinGroup.add(leftSleeve);
+
+    const rightSleeve = new THREE.Mesh(sleeveGeo, garmentMat);
+    rightSleeve.position.set(0.31, 1.25, 0);
+    rightSleeve.rotation.z = -Math.PI / 12;
+    rightSleeve.castShadow = !isSoftwareGl;
+    mannequinGroup.add(rightSleeve);
+
+    // Gold Cuffs at Wrists
+    const cuffGeo = new THREE.CylinderGeometry(0.062, 0.062, 0.04, 20);
+    const leftCuff = new THREE.Mesh(cuffGeo, tillaGoldMat);
+    leftCuff.position.set(-0.38, 0.98, 0);
+    leftCuff.rotation.z = Math.PI / 12;
+    mannequinGroup.add(leftCuff);
+
+    const rightCuff = new THREE.Mesh(cuffGeo, tillaGoldMat);
+    rightCuff.position.set(0.38, 0.98, 0);
+    rightCuff.rotation.z = -Math.PI / 12;
+    mannequinGroup.add(rightCuff);
+
+    // Flared Ghera / Lower Coat based on silhouette
+    const isAnarkali = garmentSilhouette === 'anarkali';
+    const isKurta = garmentSilhouette === 'kurta';
+    const flareRadiusTop = 0.21;
+    const flareRadiusBottom = isAnarkali ? 0.48 : isKurta ? 0.32 : 0.38;
+    const flareHeight = isAnarkali ? 0.75 : 0.62;
+    const flareGeo = new THREE.CylinderGeometry(flareRadiusTop, flareRadiusBottom, flareHeight, 32);
     const flare = new THREE.Mesh(flareGeo, garmentMat);
-    flare.position.y = 0.75;
+    flare.position.y = isAnarkali ? 0.68 : 0.75;
     flare.castShadow = !isSoftwareGl;
     mannequinGroup.add(flare);
 
-    // Trousers
+    // Trousers / Bottom Wear (Shalwar / Churidar / Sharara)
     const legGeo = new THREE.CylinderGeometry(0.08, 0.07, 0.45, 20);
     const leftLeg = new THREE.Mesh(legGeo, trouserMat);
     leftLeg.position.set(-0.1, 0.32, 0);
@@ -497,11 +623,6 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
 
     // Tilla Gold Placket
     const placketGeo = new THREE.BoxGeometry(0.045, 0.42, 0.012);
-    const tillaGoldMat = new THREE.MeshStandardMaterial({
-      color: 0xfbbf24,
-      roughness: 0.18,
-      metalness: 0.88,
-    });
     const placket = new THREE.Mesh(placketGeo, tillaGoldMat);
     placket.position.set(0, 1.34, 0.22);
     mannequinGroup.add(placket);
@@ -510,14 +631,25 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
     const buttonGeo = new THREE.CylinderGeometry(0.01, 0.01, 0.008, 12);
     buttonGeo.rotateX(Math.PI / 2);
     const buttonsGroup = new THREE.Group();
-    for (let i = 0; i < 5; i++) {
+    const btnCount = isKurta ? 4 : 6;
+    for (let i = 0; i < btnCount; i++) {
       const btn = new THREE.Mesh(buttonGeo, brassMat);
-      btn.position.set(0, 1.48 - i * 0.07, 0.23);
+      btn.position.set(0, 1.48 - i * 0.065, 0.23);
       buttonsGroup.add(btn);
     }
     mannequinGroup.add(buttonsGroup);
 
-    // Royal Draped Shawl
+    // Left Chest Pocket Square for Sherwani / Prince Coat
+    if (garmentSilhouette === 'sherwani' || garmentSilhouette === 'prince-coat') {
+      const pocketSquare = new THREE.Mesh(
+        new THREE.BoxGeometry(0.05, 0.025, 0.01),
+        new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 })
+      );
+      pocketSquare.position.set(-0.12, 1.42, 0.22);
+      mannequinGroup.add(pocketSquare);
+    }
+
+    // Royal Draped Shawl / Dupatta
     const shawlCurve = new THREE.CatmullRomCurve3([
       new THREE.Vector3(-0.32, 1.48, -0.05),
       new THREE.Vector3(-0.28, 1.52, 0.12),
@@ -527,10 +659,10 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
     ]);
     const shawlGeo = new THREE.TubeGeometry(shawlCurve, 32, 0.07, 12, false);
     const shawlMat = new THREE.MeshPhysicalMaterial({
-      color: new THREE.Color(selectedPalette).offsetHSL(0.03, 0.1, -0.05),
-      roughness: 0.45,
-      metalness: 0.2,
-      clearcoat: 0.3,
+      color: new THREE.Color(upperColor).offsetHSL(0.03, 0.1, -0.05),
+      roughness: 0.7,
+      metalness: 0.0,
+      clearcoat: 0.1,
     });
     const shawl = new THREE.Mesh(shawlGeo, shawlMat);
     shawl.castShadow = !isSoftwareGl;
@@ -560,58 +692,26 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
 
     scene.add(mannequinGroup);
 
-    // Dedicated 3D Interactive Outfit Stand for Uploaded Photos
-    const photoStandGroup = new THREE.Group();
-    photoStandGroup.position.set(0, 0.08, 0);
-
-    const frameGeo = new THREE.BoxGeometry(0.92, 1.35, 0.04);
-    const frameMat = new THREE.MeshStandardMaterial({
-      color: 0xd4af37,
-      metalness: 0.85,
-      roughness: 0.25,
-    });
-    const photoFrame = new THREE.Mesh(frameGeo, frameMat);
-    photoFrame.position.set(0, 1.15, 0);
-    photoStandGroup.add(photoFrame);
-
-    const photoPlaneGeo = new THREE.PlaneGeometry(0.86, 1.28);
-    const photoPlaneMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      roughness: 0.35,
-      metalness: 0.05,
-      side: THREE.DoubleSide,
-    });
-    const photoPlane = new THREE.Mesh(photoPlaneGeo, photoPlaneMat);
-    photoPlane.position.set(0, 1.15, 0.022);
-    photoStandGroup.add(photoPlane);
-
-    // Elegant pedestal pole for photo stand
-    const standPoleGeo2 = new THREE.CylinderGeometry(0.022, 0.022, 0.45, 16);
-    const standPole2 = new THREE.Mesh(standPoleGeo2, brassMat);
-    standPole2.position.set(0, 0.25, 0);
-    photoStandGroup.add(standPole2);
-
-    photoStandGroup.visible = false;
-    scene.add(photoStandGroup);
-    photoMeshRef.current = photoPlane;
-    photoStandGroupRef.current = photoStandGroup;
-
     sceneElementsRef.current = {
       mannequinGroup,
       garmentMaterials: [garmentMat, shawlMat],
+      trouserMaterial: trouserMat,
       buttonMaterials: [brassMat],
       goldTrimMaterials: [tillaGoldMat],
+      torsoMesh: torso,
+      flareMesh: flare,
     };
 
-    // 8. 60 FPS Loop
+    // 8. 60 FPS Loop with performance.now() and isTurntableActiveRef
     let frameId = 0;
-    const clock = new THREE.Clock();
+    let lastTime = performance.now();
 
-    const tick = () => {
-      const delta = clock.getDelta();
-      if (isTurntableActive) {
-        if (mannequinGroup) mannequinGroup.rotation.y += delta * 0.35;
-        if (photoStandGroup) photoStandGroup.rotation.y += delta * 0.35;
+    const tick = (now: number) => {
+      const delta = Math.min((now - lastTime) / 1000, 0.1);
+      lastTime = now;
+
+      if (isTurntableActiveRef.current && mannequinGroup) {
+        mannequinGroup.rotation.y += delta * 0.35;
       }
       controls.update();
       renderer.render(scene, camera);
@@ -622,8 +722,8 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
 
     const handleResize = () => {
       if (!container) return;
-      const w = container.clientWidth;
-      const h = container.clientHeight;
+      const w = Math.max(container.clientWidth || window.innerWidth, 300);
+      const h = Math.max(container.clientHeight || window.innerHeight, 300);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
@@ -633,22 +733,31 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
     return () => {
       cancelAnimationFrame(frameId);
       window.removeEventListener('resize', handleResize);
+      scene.traverse((obj) => {
+        if (obj instanceof THREE.Mesh) {
+          obj.geometry?.dispose();
+          if (Array.isArray(obj.material)) {
+            obj.material.forEach((m) => {
+              m.map?.dispose();
+              m.dispose();
+            });
+          } else if (obj.material) {
+            obj.material.map?.dispose();
+            obj.material.dispose();
+          }
+        }
+      });
       controls.dispose();
       renderer.dispose();
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }
     };
-  }, [isOpen]);
+  }, [isOpen, garmentSilhouette]);
 
-  // Texture mapping for uploaded photo onto both 3D display stand and mannequin garments
+  // Texture mapping for uploaded photo directly onto mannequin torso & flare
   useEffect(() => {
-    if (!uploadedPhotoUrl) {
-      if (photoStandGroupRef.current) photoStandGroupRef.current.visible = false;
-      if (sceneElementsRef.current.mannequinGroup) {
-        sceneElementsRef.current.mannequinGroup.visible = true;
-        sceneElementsRef.current.mannequinGroup.position.x = 0;
-      }
+    if (!uploadedPhotoUrl || !usePhotoTexture) {
       sceneElementsRef.current.garmentMaterials.forEach((mat) => {
         mat.map = null;
         mat.needsUpdate = true;
@@ -663,68 +772,45 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
         texture.colorSpace = THREE.SRGBColorSpace;
         texture.wrapS = THREE.RepeatWrapping;
         texture.wrapT = THREE.RepeatWrapping;
-
-        if (photoMeshRef.current) {
-          (photoMeshRef.current.material as THREE.MeshStandardMaterial).map = texture;
-          (photoMeshRef.current.material as THREE.MeshStandardMaterial).needsUpdate = true;
-        }
+        texture.repeat.set(1.5, 1.5);
 
         sceneElementsRef.current.garmentMaterials.forEach((mat) => {
           mat.map = texture;
           mat.needsUpdate = true;
         });
-
-        if (viewDisplayMode === 'photoStand') {
-          if (photoStandGroupRef.current) {
-            photoStandGroupRef.current.visible = true;
-            photoStandGroupRef.current.position.x = 0;
-          }
-          if (sceneElementsRef.current.mannequinGroup) sceneElementsRef.current.mannequinGroup.visible = false;
-        } else if (viewDisplayMode === 'mannequin') {
-          if (photoStandGroupRef.current) photoStandGroupRef.current.visible = false;
-          if (sceneElementsRef.current.mannequinGroup) {
-            sceneElementsRef.current.mannequinGroup.visible = true;
-            sceneElementsRef.current.mannequinGroup.position.x = 0;
-          }
-        } else {
-          // both
-          if (photoStandGroupRef.current) {
-            photoStandGroupRef.current.visible = true;
-            photoStandGroupRef.current.position.x = 0.65;
-          }
-          if (sceneElementsRef.current.mannequinGroup) {
-            sceneElementsRef.current.mannequinGroup.visible = true;
-            sceneElementsRef.current.mannequinGroup.position.x = -0.65;
-          }
-        }
       },
       undefined,
       (err) => console.warn('Could not load uploaded outfit texture in 3D studio:', err)
     );
-  }, [uploadedPhotoUrl, viewDisplayMode, isOpen]);
+  }, [uploadedPhotoUrl, usePhotoTexture, isOpen]);
 
   // Live Fabric Color & Finish Updates
   useEffect(() => {
-    const col = new THREE.Color(selectedPalette);
+    const upperCol = new THREE.Color(upperColor);
     sceneElementsRef.current.garmentMaterials.forEach((mat) => {
-      mat.color = col;
+      mat.color = upperCol;
       if (fabricFinish === 'velvet') {
         mat.roughness = 0.85;
-        mat.metalness = 0.05;
+        mat.metalness = 0.0;
         mat.clearcoat = 0.12;
       } else if (fabricFinish === 'raw-silk') {
-        mat.roughness = 0.45;
-        mat.metalness = 0.22;
-        mat.clearcoat = 0.35;
+        mat.roughness = 0.7;
+        mat.metalness = 0.0;
+        mat.clearcoat = 0.2;
       } else {
         // brocade
-        mat.roughness = 0.32;
-        mat.metalness = 0.48;
-        mat.clearcoat = 0.55;
+        mat.roughness = 0.45;
+        mat.metalness = 0.35;
+        mat.clearcoat = 0.45;
       }
       mat.needsUpdate = true;
     });
-  }, [selectedPalette, fabricFinish]);
+
+    if (sceneElementsRef.current.trouserMaterial) {
+      sceneElementsRef.current.trouserMaterial.color = new THREE.Color(lowerColor);
+      sceneElementsRef.current.trouserMaterial.needsUpdate = true;
+    }
+  }, [upperColor, lowerColor, fabricFinish]);
 
   if (!isOpen) return null;
 
@@ -830,6 +916,16 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
             <span className="hidden md:inline">Auto-360° Spin</span>
           </button>
 
+          {/* Reset Look Button */}
+          <button
+            onClick={handleResetLook}
+            className="rounded-xl border border-white/20 bg-black/60 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-white/10 hover:text-white transition cursor-pointer flex items-center gap-1.5"
+            title="Reset to default camera & styling"
+          >
+            <RotateCcw size={13} />
+            <span className="hidden lg:inline">Reset</span>
+          </button>
+
           {/* Close Modal */}
           <button
             onClick={onClose}
@@ -854,7 +950,7 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
             type="text"
             value={customPrompt}
             onChange={(e) => setCustomPrompt(e.target.value)}
-            placeholder="Customize your 3D outfit (e.g. 'Royal blue velvet sherwani with gold embroidery for 20s')..."
+            placeholder="Customize 3D outfit (e.g. 'Pant white and coat blue sherwani', 'emerald kurta')..."
             className="flex-1 bg-transparent px-2 py-1 text-xs sm:text-sm text-white placeholder-slate-400 focus:outline-none"
           />
           <button
@@ -877,12 +973,27 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
         </form>
       </div>
 
-      {/* 3D WebGL Canvas Mount (Full-Bleed 100vw x 100vh) */}
-      <div
-        ref={mountRef}
-        className="relative h-full w-full cursor-grab active:cursor-grabbing select-none"
-        title="Click and drag to rotate mannequin 360°"
-      />
+      {/* 3D WebGL Canvas Mount or Fallback View */}
+      {webGlError ? (
+        <div className="flex flex-col items-center justify-center h-full w-full p-8 text-center bg-slate-950 text-white space-y-4">
+          <div className="p-6 rounded-3xl bg-slate-900/90 border border-purple-500/30 text-slate-200 max-w-md shadow-2xl backdrop-blur-3xl">
+            <Sparkles size={36} className="mx-auto mb-3 text-purple-400" />
+            <h3 className="font-bold text-base text-white">3D Studio Fallback Mode</h3>
+            <p className="text-xs text-slate-300 mt-1.5 leading-relaxed">
+              {webGlError}
+            </p>
+            <p className="text-[11px] text-slate-400 mt-2">
+              All tailoring specifications, custom prompt inputs, and fabric finishing below remain 100% active.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div
+          ref={mountRef}
+          className="relative h-full w-full cursor-grab active:cursor-grabbing select-none"
+          title="Click and drag to rotate mannequin 360°"
+        />
+      )}
 
       {/* Mobile Angle Selector bar (Visible on small screens) */}
       <div className="sm:hidden absolute top-32 inset-x-0 z-20 flex justify-center px-4 pointer-events-none">
@@ -1001,42 +1112,33 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
 
                 {/* Row 2: Custom Photo Upload Mode & Weave Finish */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 border-t border-white/5">
-                  {/* Photo 3D Studio Mapping Controls */}
+                  {/* Direct Photo Draping on 3D Mannequin Controls */}
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-300">
                       <ImageIcon size={14} className="text-purple-400" />
-                      <span>Outfit Photo:</span>
+                      <span>Photo Texture:</span>
                     </div>
 
                     {uploadedPhotoUrl ? (
                       <div className="flex items-center gap-2">
-                        {/* 3D Mode Selector */}
-                        <div className="flex rounded-lg border border-white/10 bg-black/50 p-0.5">
-                          {(
-                            [
-                              { id: 'mannequin', label: 'Mannequin' },
-                              { id: 'photoStand', label: '3D Stand' },
-                              { id: 'both', label: 'Dual View' },
-                            ] as const
-                          ).map((mode) => (
-                            <button
-                              key={mode.id}
-                              onClick={() => setViewDisplayMode(mode.id)}
-                              className={`rounded-md px-2 py-0.5 text-[10px] font-semibold transition ${
-                                viewDisplayMode === mode.id
-                                  ? 'bg-purple-600 text-white'
-                                  : 'text-slate-400 hover:text-white'
-                              }`}
-                            >
-                              {mode.label}
-                            </button>
-                          ))}
-                        </div>
+                        {/* Toggle between Photo Texture vs Plain Colorway */}
+                        <button
+                          onClick={() => setUsePhotoTexture((prev) => !prev)}
+                          className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition cursor-pointer ${
+                            usePhotoTexture
+                              ? 'bg-purple-600 text-white shadow-sm border border-purple-400'
+                              : 'bg-white/10 text-slate-300 hover:text-white border border-white/15'
+                          }`}
+                        >
+                          {usePhotoTexture ? 'Draped on 3D Model' : 'Plain Fabric'}
+                        </button>
 
-                        {/* Thumbnail & Remove button */}
+                        {/* Thumbnail */}
                         <div className="relative h-6 w-6 rounded-md overflow-hidden border border-white/30">
                           <img src={uploadedPhotoUrl} alt="Outfit" className="h-full w-full object-cover" />
                         </div>
+
+                        {/* Remove photo */}
                         <button
                           onClick={handleRemovePhoto}
                           className="rounded-md bg-rose-500/20 border border-rose-500/40 p-1 text-rose-300 hover:bg-rose-500/40 transition cursor-pointer"
@@ -1081,6 +1183,35 @@ export const ThreeFashionRunwayModal: React.FC<Props> = ({
                         </button>
                       ))}
                     </div>
+                  </div>
+                </div>
+
+                {/* Row 3: Quick Silhouette Selector */}
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/5">
+                  <span className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                    <Scissors size={14} className="text-purple-400" />
+                    <span>Silhouette Model:</span>
+                  </span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      { id: 'sherwani', label: 'Royal Sherwani' },
+                      { id: 'kurta', label: 'Bespoke Kurta' },
+                      { id: 'anarkali', label: 'Kalidar Anarkali' },
+                      { id: 'prince-coat', label: 'Prince Coat' },
+                      { id: 'waistcoat', label: 'Waistcoat' },
+                    ].map((sil) => (
+                      <button
+                        key={sil.id}
+                        onClick={() => setGarmentSilhouette(sil.id as any)}
+                        className={`rounded-lg px-2.5 py-1 text-xs font-medium transition cursor-pointer ${
+                          garmentSilhouette === sil.id
+                            ? 'bg-purple-600 text-white border border-purple-400 shadow-sm'
+                            : 'bg-white/5 text-slate-300 border border-white/10 hover:bg-white/10'
+                        }`}
+                      >
+                        {sil.label}
+                      </button>
+                    ))}
                   </div>
                 </div>
               </div>

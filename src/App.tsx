@@ -101,46 +101,35 @@ const FailSafeImageCard: React.FC<FailSafeImageCardProps> = ({
   onOpenLightbox,
   onRegenerate,
 }) => {
-  const cleanCat = encodeURIComponent(
-    (caption.toLowerCase().includes('lehenga') || caption.toLowerCase().includes('women') ? 'women,lehenga' : 'men,kurta')
-  );
-  const dynamicFlickrFallback = fallbackSrc && fallbackSrc.startsWith('http')
-    ? fallbackSrc
-    : `https://loremflickr.com/800/500/pakistani,fashion,${cleanCat}`;
+  const safeLocalFallback = localFallbackSrc || (caption.toLowerCase().includes('women') ? '/assets/women_festive.jpg' : '/assets/men_festive.jpg');
 
-  const [currentSrc, setCurrentSrc] = useState(primarySrc);
+  const [currentSrc, setCurrentSrc] = useState(primarySrc || safeLocalFallback);
   const [isLoaded, setIsLoaded] = useState(false);
   const [hasTimedOut, setHasTimedOut] = useState(false);
 
   useEffect(() => {
-    setCurrentSrc(primarySrc);
+    setCurrentSrc(primarySrc || safeLocalFallback);
     setIsLoaded(false);
     setHasTimedOut(false);
-  }, [primarySrc]);
+  }, [primarySrc, safeLocalFallback]);
 
-  // 4-second Fail-Safe timeout handler: switches immediately to dynamic pakistani fashion search fallback
+  // Fail-Safe timeout handler: switches immediately to safe local curated fashion asset
   useEffect(() => {
     if (isLoaded) return;
     const timer = setTimeout(() => {
-      if (
-        !isLoaded &&
-        currentSrc !== dynamicFlickrFallback &&
-        currentSrc !== localFallbackSrc
-      ) {
-        console.warn('Image loading timed out (4s); switching to dynamic Pakistani fashion search fallback');
+      if (!isLoaded && currentSrc !== safeLocalFallback) {
+        console.warn('Image loading timed out; switching to local curated fashion asset');
         setHasTimedOut(true);
-        setCurrentSrc(dynamicFlickrFallback);
+        setCurrentSrc(safeLocalFallback);
       }
-    }, 4000);
+    }, 3000);
     return () => clearTimeout(timer);
-  }, [isLoaded, currentSrc, dynamicFlickrFallback, localFallbackSrc]);
+  }, [isLoaded, currentSrc, safeLocalFallback]);
 
   const handleError = () => {
-    // Cascade gracefully: Primary (Pollinations) -> Dynamic Fallback (LoremFlickr Pakistani Fashion) -> Local Curated Asset
-    if (currentSrc !== dynamicFlickrFallback && currentSrc !== localFallbackSrc) {
-      setCurrentSrc(dynamicFlickrFallback);
-    } else if (currentSrc !== localFallbackSrc) {
-      setCurrentSrc(localFallbackSrc);
+    // Graceful fallback directly to local curated asset
+    if (currentSrc !== safeLocalFallback) {
+      setCurrentSrc(safeLocalFallback);
     }
     setIsLoaded(true);
   };
@@ -188,7 +177,7 @@ const FailSafeImageCard: React.FC<FailSafeImageCardProps> = ({
         {isAiGen && (
           <div className="absolute top-2.5 left-2.5 rounded-full bg-primary/95 text-primary-foreground px-2.5 py-1 text-[10px] font-bold tracking-wide backdrop-blur-md shadow-md flex items-center gap-1.5 border border-white/20 z-20">
             <Sparkles size={11} className="text-amber-300" />
-            <span>✨ Attached Look: Exact Custom Visual Matching Your Request</span>
+            <span>✨ Style preview · Bespoke Visual</span>
           </div>
         )}
 

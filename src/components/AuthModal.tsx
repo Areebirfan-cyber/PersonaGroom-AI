@@ -53,7 +53,20 @@ export const AuthModal: React.FC<Props> = ({ isOpen, onClose, isCompulsory = fal
       onClose();
     } catch (err: any) {
       console.error(err);
-      setErrorMsg(err.message || 'Google authentication was cancelled or failed.');
+      const code = err?.code || '';
+      if (code === 'auth/unauthorized-domain') {
+        setErrorMsg('Domain not yet authorized in Firebase Console. (Add domain in Firebase Console -> Auth -> Settings -> Authorized domains). Meanwhile, you can enter immediately via 1-Click Guest Mode or Email login!');
+      } else if (code === 'auth/popup-blocked') {
+        setErrorMsg('Pop-up window was blocked. Attempting redirect sign-in, or switch to 1-Click Guest Mode below.');
+      } else if (code === 'auth/popup-closed-by-user') {
+        setErrorMsg('Sign-in popup was closed before completing. You can try again or use 1-Click Guest Mode.');
+      } else if (code === 'auth/operation-not-allowed') {
+        setErrorMsg('Google Sign-In is not enabled in Firebase Console. Please use 1-Click Guest Mode or Email sign in.');
+      } else if (code === 'auth/network-request-failed') {
+        setErrorMsg('Network error. Please check your connection or continue via 1-Click Guest Mode.');
+      } else {
+        setErrorMsg(err.message || 'Google authentication encountered an issue. You can use 1-Click Guest Mode.');
+      }
     } finally {
       setIsSubmitting(false);
     }

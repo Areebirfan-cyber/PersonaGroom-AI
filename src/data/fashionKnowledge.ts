@@ -196,13 +196,24 @@ export function extractDynamicImagePrompt(
 } {
   const combinedText = `${advice.intro || ''} ${advice.top || ''} ${advice.bottom || ''} ${advice.accessories || ''}`;
   const dynamicPrompt = sanitizeFashionImagePrompt(combinedText, gender, advice.category);
-  const seed = Date.now();
-  const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(dynamicPrompt)}?width=800&height=500&nologo=true&seed=${seed}`;
+  const isFemale = gender === 'women';
+  let localAsset = isFemale ? '/assets/women_festive.jpg' : '/assets/men_festive.jpg';
+  if (advice.category === 'casual') {
+    localAsset = isFemale ? '/assets/women_casual.jpg' : '/assets/men_casual.jpg';
+  } else if (advice.category === 'jewelry' && isFemale) {
+    localAsset = '/assets/women_jewelry.jpg';
+  } else if (advice.category === 'shoes') {
+    localAsset = '/assets/shoes_craft.jpg';
+  } else if (advice.category === 'color') {
+    localAsset = '/assets/colors.jpg';
+  }
 
-  const categoryKeywords = `${gender === 'women' ? 'women' : 'men'},${advice.category || 'fashion'}`;
-  const fallbackUrl = `https://loremflickr.com/800/500/pakistani,fashion,${encodeURIComponent(categoryKeywords)}`;
-
-  return { dynamicPrompt, imageUrl, fallbackUrl, categoryKeywords };
+  return {
+    dynamicPrompt,
+    imageUrl: localAsset,
+    fallbackUrl: isFemale ? '/assets/women_festive.jpg' : '/assets/men_festive.jpg',
+    categoryKeywords: `${gender},${advice.category || 'fashion'}`,
+  };
 }
 
 export function resolveLookImage(
@@ -223,7 +234,7 @@ export function resolveLookImage(
     fallbackSrc: fallbackUrl,
     prompt: dynamicPrompt,
     categoryKeywords,
-    caption: `Dynamic AI Preview · ${cleanTop}`,
+    caption: `Style preview · ${cleanTop}`,
   };
 }
 
